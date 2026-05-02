@@ -1,0 +1,314 @@
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+
+use directories::UserDirs;
+use zip::write::SimpleFileOptions;
+use zip::{ZipArchive, ZipWriter};
+
+use crate::image::{Color, Image, Rgb24};
+use crate::platform;
+use crate::pyxel::{self, Pyxel};
+use crate::resource_data::ResourceData;
+use crate::screencast::Screencast;
+use crate::settings::{
+    BASE_DIR, DEFAULT_CAPTURE_SCALE, DEFAULT_CAPTURE_SEC, PALETTE_FILE_EXTENSION,
+    RESOURCE_ARCHIVE_NAME, RESOURCE_FILE_EXTENSION, RESOURCE_FORMAT_VERSION,
+};
+
+pub struct Resource {
+    capture_scale: u32,
+    screencast: Screencast,
+}
+
+impl Resource {
+    pub fn new(capture_scale: Option<u32>, capture_sec: Option<u32>, fps: u32) -> Self {
+        let capture_scale = capture_scale.unwrap_or(DEFAULT_CAPTURE_SCALE);
+        let capture_sec = capture_sec.unwrap_or(DEFAULT_CAPTURE_SEC);
+
+        Self {
+            capture_scale: capture_scale.max(1),
+            screencast: Screencast::new(fps, capture_sec),
+        }
+    }
+}
+
+impl Pyxel {
+    // Resource I/O
+
+    pub fn load_resource(
+        &mut self,
+        filename: &str,
+        exclude_images: Option<bool>,
+        exclude_tilemaps: Option<bool>,
+        exclude_sounds: Option<bool>,
+        exclude_musics: Option<bool>,
+    ) -> Result<(), String> {
+        let file = File::open(Path::new(&filename))
+            .map_err(|_| format!("Failed to open file '{filename}'"))?;
+        let mut archive =
+            ZipArchive::new(file).map_err(|_| format!("Failed to parse file '{filename}'"))?;
+
+        // Old resource file
+        if archive.by_name("pyxel_resource/version").is_ok() {
+            println!("An old Pyxel resource file '{filename}' is loaded. Please re-save it with the latest Pyxel.");
+            self.load_old_resource(
+                &mut archive,
+                filename,
+                !exclude_images.unwrap_or(false),
+                !exclude_tilemaps.unwrap_or(false),
+                !exclude_sounds.unwrap_or(false),
+                !exclude_musics.unwrap_or(false),
+            );
+            self.load_palette(filename)?;
+            return Ok(());
+        }
+
+        // New resource file
+        let mut file = archive
+            .by_name(RESOURCE_ARCHIVE_NAME)
+            .map_err(|_| format!("Failed to read file '{filename}'"))?;
+        let mut toml_text = String::new();
+        file.read_to_string(&mut toml_text)
+            .map_err(|_| format!("Failed to read file '{filename}'"))?;
+
+        let format_version = Self::parse_format_version(&toml_text)?;
+        if format_version > RESOURCE_FORMAT_VERSION {
+            return Err(format!(
+                "Unsupported resource format version '{format_version}'"
+            ));
+        }
+
+        let resource_data = ResourceData::from_toml(&toml_text)?;
+        resource_data.to_runtime(
+            self,
+            exclude_images.unwrap_or(false),
+            exclude_tilemaps.unwrap_or(false),
+            exclude_sounds.unwrap_or(false),
+            exclude_musics.unwrap_or(false),
+        );
+        self.load_palette(filename)?;
+        Ok(())
+    }
+
+    pub fn save_resource(
+        &mut self,
+        filename: &str,
+        exclude_images: Option<bool>,
+        exclude_tilemaps: Option<bool>,
+        exclude_sounds: Option<bool>,
+        exclude_musics: Option<bool>,
+    ) -> Result<(), String> {
+        let toml_text = ResourceData::from_runtime(self).to_toml(
+            exclude_images.unwrap_or(false),
+            exclude_tilemaps.unwrap_or(false),
+            exclude_sounds.unwrap_or(false),
+            exclude_musics.unwrap_or(false),
+        );
+
+        let path = Path::new(&filename);
+        let file = File::create(path).map_err(|_| format!("Failed to create file '{filename}'"))?;
+
+        let mut zip = ZipWriter::new(file);
+        zip.start_file(RESOURCE_ARCHIVE_NAME, SimpleFileOptions::default())
+            .map_err(|_| format!("Failed to save file '{filename}'"))?;
+        zip.write_all(toml_text.as_bytes())
+            .map_err(|_| format!("Failed to save file '{filename}'"))?;
+        zip.finish()
+            .map_err(|_| format!("Failed to save file '{filename}'"))?;
+
+        platform::export_browser_file(filename);
+        Ok(())
+    }
+
+    // Palette I/O
+
+    pub fn load_palette(&mut self, filename: &str) -> Result<(), String> {
+        let filename = Self::palette_filename(filename);
+
+        let Ok(mut file) = File::open(Path::new(&filename)) else {
+            return Ok(());
+        };
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .map_err(|_| format!("Failed to read file '{filename}'"))?;
+
+        let colors: Vec<Rgb24> = contents
+            .lines()
+            .enumerate()
+            .filter(|(_, s)| !s.trim().is_empty())
+            .map(|(i, s)| {
+                u32::from_str_radix(s.trim(), 16)
+                    .map(|v| v as Rgb24)
+                    .map_err(|_| format!("Failed to parse line {} in '{filename}': '{s}'", i + 1))
+            })
+            .collect::<Result<_, _>>()?;
+        *pyxel::colors() = if colors.is_empty() {
+            vec![0x00ff_ffff]
+        } else {
+            colors
+        };
+        Ok(())
+    }
+
+    pub fn save_palette(&self, filename: &str) -> Result<(), String> {
+        let filename = Self::palette_filename(filename);
+        let mut file = File::create(Path::new(&filename))
+            .map_err(|_| format!("Failed to create file '{filename}'"))?;
+
+        for &color in pyxel::colors().iter() {
+            writeln!(file, "{color:06x}")
+                .map_err(|_| format!("Failed to save file '{filename}'"))?;
+        }
+
+        platform::export_browser_file(&filename);
+        Ok(())
+    }
+
+    // Capture Operations
+
+    pub fn take_screenshot(
+        &mut self,
+        filename: Option<&str>,
+        scale: Option<u32>,
+    ) -> Result<(), String> {
+        let filename = filename.map_or_else(
+            || Self::join_desktop_path(&format!("pyxel-{}", Self::datetime_string())),
+            str::to_string,
+        );
+        let scale = scale.unwrap_or(self.resource.capture_scale).max(1);
+        pyxel::screen().save(&filename, scale)?;
+
+        platform::export_browser_file(&(filename + ".png"));
+        Ok(())
+    }
+
+    pub fn save_screencast(
+        &mut self,
+        filename: Option<&str>,
+        scale: Option<u32>,
+    ) -> Result<(), String> {
+        let filename = filename.map_or_else(
+            || Self::join_desktop_path(&format!("pyxel-{}", Self::datetime_string())),
+            str::to_string,
+        );
+        let scale = scale.unwrap_or(self.resource.capture_scale).max(1);
+        self.resource.screencast.save(&filename, scale)?;
+
+        platform::export_browser_file(&(filename + ".gif"));
+        Ok(())
+    }
+
+    pub fn reset_screencast(&mut self) {
+        self.resource.screencast.reset();
+    }
+
+    pub(crate) fn capture_screen(&mut self) {
+        self.resource.screencast.capture(
+            *pyxel::width(),
+            *pyxel::height(),
+            &pyxel::screen().canvas.data,
+            pyxel::colors(),
+            *pyxel::frame_count(),
+        );
+    }
+
+    // User Data
+
+    pub fn user_data_dir(&self, vendor_name: &str, app_name: &str) -> Result<String, String> {
+        let home_dir = UserDirs::new()
+            .map_or_else(PathBuf::new, |user_dirs| user_dirs.home_dir().to_path_buf());
+        let app_data_dir = home_dir
+            .join(BASE_DIR)
+            .join(Self::sanitize_dir_name(vendor_name))
+            .join(Self::sanitize_dir_name(app_name));
+
+        if !app_data_dir.exists() {
+            let dir = app_data_dir.to_string_lossy();
+            fs::create_dir_all(&app_data_dir)
+                .map_err(|_| format!("Failed to create directory '{dir}'"))?;
+            println!("Created '{dir}'");
+        }
+
+        let mut app_data_dir = app_data_dir.to_string_lossy().to_string();
+        if !app_data_dir.ends_with(MAIN_SEPARATOR) {
+            app_data_dir.push(MAIN_SEPARATOR);
+        }
+
+        Ok(app_data_dir)
+    }
+
+    // Debug Dumps
+
+    pub(crate) fn dump_image_bank(&self, image_index: u32) {
+        let filename = Self::join_desktop_path(&format!("pyxel-image{image_index}"));
+
+        if let Some(&image) = pyxel::images().get(image_index as usize) {
+            if let Err(e) = unsafe { &*image }.save(&filename, 1) {
+                println!("{e}");
+                return;
+            }
+            platform::export_browser_file(&(filename + ".png"));
+        }
+    }
+
+    pub(crate) fn dump_palette(&self) {
+        let filename = Self::join_desktop_path("pyxel-palette");
+        let num_colors = pyxel::colors().len();
+        let image_ptr = Image::new(num_colors as u32, 1);
+        let image = unsafe { &mut *image_ptr };
+        for i in 0..num_colors {
+            image.set_pixel(i as f32, 0.0, i as Color);
+        }
+        let result = image.save(&filename, 16);
+        unsafe {
+            drop(Box::from_raw(image_ptr));
+        }
+        if let Err(e) = result {
+            println!("{e}");
+            return;
+        }
+        platform::export_browser_file(&(filename + ".png"));
+    }
+
+    // Helpers
+
+    fn palette_filename(filename: &str) -> String {
+        if filename.to_lowercase().ends_with(RESOURCE_FILE_EXTENSION) {
+            filename[..filename.len() - RESOURCE_FILE_EXTENSION.len()].to_string()
+                + PALETTE_FILE_EXTENSION
+        } else {
+            filename.to_string()
+        }
+    }
+
+    fn parse_format_version(toml_text: &str) -> Result<u32, String> {
+        toml_text
+            .lines()
+            .find(|line| line.trim().starts_with("format_version"))
+            .and_then(|line| line.split_once('='))
+            .and_then(|(_, value)| value.trim().parse::<u32>().ok())
+            .ok_or_else(|| "Failed to parse resource format version".to_string())
+    }
+
+    fn datetime_string() -> String {
+        chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
+    }
+
+    fn join_desktop_path(basename: &str) -> String {
+        let desktop_dir = UserDirs::new()
+            .and_then(|user_dirs| user_dirs.desktop_dir().map(Path::to_path_buf))
+            .unwrap_or_default();
+
+        desktop_dir.join(basename).to_string_lossy().to_string()
+    }
+
+    fn sanitize_dir_name(name: &str) -> String {
+        name.to_lowercase()
+            .replace(' ', "_")
+            .chars()
+            .filter(|&c| c.is_alphanumeric() || c == '_' || c == '-')
+            .collect()
+    }
+}

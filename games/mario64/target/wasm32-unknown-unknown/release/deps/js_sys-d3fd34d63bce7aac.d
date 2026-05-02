@@ -1,0 +1,10 @@
+/home/oosawak/Workspace/Nantaraquad/games/mario64/target/wasm32-unknown-unknown/release/deps/js_sys-d3fd34d63bce7aac.d: /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/lib.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/mod.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/queue.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/task/singlethread.rs
+
+/home/oosawak/Workspace/Nantaraquad/games/mario64/target/wasm32-unknown-unknown/release/deps/libjs_sys-d3fd34d63bce7aac.rlib: /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/lib.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/mod.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/queue.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/task/singlethread.rs
+
+/home/oosawak/Workspace/Nantaraquad/games/mario64/target/wasm32-unknown-unknown/release/deps/libjs_sys-d3fd34d63bce7aac.rmeta: /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/lib.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/mod.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/queue.rs /home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/task/singlethread.rs
+
+/home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/lib.rs:
+/home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/mod.rs:
+/home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/queue.rs:
+/home/oosawak/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97/src/futures/task/singlethread.rs:

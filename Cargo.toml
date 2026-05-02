@@ -1,0 +1,57 @@
+[package]
+name = "nquad"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.wasm-pack]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pyxel-core library (local fork)
+# Note: Features depend on build target
+#   - Emscripten (wasm32-unknown-emscripten): Use SDL2 port (built by Emscripten)
+#   - Native targets: Use system SDL2 or static build
+pyxel-core = { path = "./pyxel_fork/crates/pyxel-core", features = ["sdl2_dynamic"] }
+
+# Other dependencies
+macroquad = { version = "0.4", optional = true }
+egui-macroquad = { version = "0.17", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+lazy_static = "1.4"
+image = "0.24"
+
+# WASM-specific dependencies
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "Window",
+    "CanvasRenderingContext2d",
+    "ImageData",
+] }
+gloo-timers = { version = "0.3", optional = true, features = ["futures"] }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+wasm-bindgen-test = "0.3"
+criterion = "0.5"
+
+[features]
+default = ["graphics"]
+graphics = ["macroquad", "egui-macroquad"]
+
+# WASM features (for web deployment)
+wasm = ["wasm-bindgen", "web-sys", "gloo-timers", "wasm-bindgen-futures"]
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true

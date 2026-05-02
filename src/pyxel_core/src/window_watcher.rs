@@ -1,0 +1,71 @@
+use std::env::{set_var, var};
+use std::fs::{read_to_string, write};
+
+use crate::platform;
+use crate::settings::{WATCH_STATE_FILE_ENV, WINDOW_STATE_ENV};
+
+pub struct WindowWatcher {
+    watch_state_file: Option<String>,
+    window_state: Option<(i32, i32, u32, u32)>,
+}
+
+impl WindowWatcher {
+    pub fn new() -> Self {
+        let (watch_state_file, raw_state) = if let Ok(path) = var(WATCH_STATE_FILE_ENV) {
+            let content = read_to_string(&path).unwrap_or_default();
+            (Some(path), content)
+        } else {
+            (None, var(WINDOW_STATE_ENV).unwrap_or_default())
+        };
+
+        let window_state = Self::parse_window_state(&raw_state);
+
+        if let Some((x, y, w, h)) = window_state {
+            platform::set_window_pos(x, y);
+            platform::set_window_size(w, h);
+            unsafe { set_var(WINDOW_STATE_ENV, &raw_state) };
+        }
+
+        Self {
+            watch_state_file,
+            window_state,
+        }
+    }
+
+    pub fn new_headless() -> Self {
+        Self {
+            watch_state_file: None,
+            window_state: None,
+        }
+    }
+
+    pub fn update(&mut self) {
+        if platform::is_fullscreen() {
+            return;
+        }
+
+        let (x, y) = platform::window_pos();
+        let (w, h) = platform::window_size();
+        let window_state = Some((x, y, w, h));
+
+        if self.window_state != window_state {
+            self.window_state = window_state;
+
+            let raw_state = format!("{x} {y} {w} {h}");
+            unsafe { set_var(WINDOW_STATE_ENV, &raw_state) };
+            if let Some(path) = &self.watch_state_file {
+                // Best-effort write; watcher continues even if the state file is unavailable.
+                write(path, &raw_state).ok();
+            }
+        }
+    }
+
+    fn parse_window_state(raw_state: &str) -> Option<(i32, i32, u32, u32)> {
+        let mut fields = raw_state.split_whitespace();
+        let x = fields.next()?.parse().ok()?;
+        let y = fields.next()?.parse().ok()?;
+        let w = fields.next()?.parse().ok()?;
+        let h = fields.next()?.parse().ok()?;
+        Some((x, y, w, h))
+    }
+}

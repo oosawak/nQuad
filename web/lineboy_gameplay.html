@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Lineboy WASM - Gameplay Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #4a9;
+        }
+        #gameCanvas {
+            display: block;
+            margin: 20px auto;
+            border: 3px solid #4a9;
+            background: #000;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        .controls {
+            text-align: center;
+            background: #222;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .status {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 20px 0;
+            background: #222;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #333;
+            padding: 5px 0;
+        }
+        .status-item:last-child {
+            border-bottom: none;
+        }
+        .ok { color: #4a9; }
+        .warn { color: #fa0; }
+        .error { color: #f44; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Lineboy WASM - Gameplay Test</h1>
+        
+        <canvas id="gameCanvas" width="160" height="120"></canvas>
+        
+        <div class="controls">
+            <strong>Controls:</strong><br>
+            Arrow Keys: Move Left/Right<br>
+            Space: Jump<br>
+            R: Reset Game
+        </div>
+        
+        <div class="status">
+            <div class="status-item">
+                <span>WASM Module:</span>
+                <span id="wasmStatus" class="warn">Loading...</span>
+            </div>
+            <div class="status-item">
+                <span>Game Initialized:</span>
+                <span id="initStatus" class="warn">No</span>
+            </div>
+            <div class="status-item">
+                <span>Canvas Rendering:</span>
+                <span id="renderStatus" class="warn">Waiting...</span>
+            </div>
+            <div class="status-item">
+                <span>FPS:</span>
+                <span id="fpsStatus" class="warn">0</span>
+            </div>
+            <div class="status-item">
+                <span>Frames Rendered:</span>
+                <span id="frameCount" class="ok">0</span>
+            </div>
+            <div class="status-item">
+                <span>Last Error:</span>
+                <span id="errorMsg" class="ok">None</span>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        let wasmModule = null;
+        let canvas = null;
+        let ctx = null;
+        let frameCount = 0;
+        let fps = 0;
+        let lastTime = Date.now();
+        let gameRunning = false;
+
+        const updateStatus = (id, text, className = 'ok') => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.textContent = text;
+                el.className = className;
+            }
+        };
+
+        const setError = (msg) => {
+            console.error(msg);
+            updateStatus('errorMsg', msg.substring(0, 50) + (msg.length > 50 ? '...' : ''), 'error');
+        };
+
+        try {
+            console.log('=== Lineboy WASM Gameplay Test ===\n');
+
+            // Step 1: Setup Canvas
+            console.log('Step 1: Setting up Canvas...');
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('Failed to get 2D context');
+            console.log(`  ✓ Canvas: ${canvas.width}x${canvas.height}`);
+
+            // Step 2: Load WASM module
+            console.log('\nStep 2: Importing WASM module...');
+            const wasmModule = await import('./lineboy/lineboy.js');
+            console.log(`  ✓ Module imported`);
+            console.log(`  typeof default: ${typeof wasmModule.default}`);
+            console.log(`  typeof init: ${typeof wasmModule.init}`);
+            console.log(`  typeof update: ${typeof wasmModule.update}`);
+            console.log(`  typeof render: ${typeof wasmModule.render}`);
+            console.log(`  typeof reset: ${typeof wasmModule.reset}`);
+            updateStatus('wasmStatus', 'Loaded', 'ok');
+
+            // Step 3: Initialize WASM
+            console.log('\nStep 3: Initializing WASM...');
+            const initResult = await wasmModule.default();
+            console.log(`  ✓ default() completed:`, initResult);
+            updateStatus('initStatus', 'Running', 'ok');
+            gameRunning = true;
+
+            // Step 4: Initialize game
+            console.log('\nStep 4: Calling game init()...');
+            wasmModule.init();
+            console.log(`  ✓ Game initialized`);
+
+            // Step 5: Setup game loop
+            console.log('\nStep 5: Starting game loop...');
+            let lastFrameTime = Date.now();
+
+            const gameLoop = () => {
+                try {
+                    // Calculate FPS
+                    const now = Date.now();
+                    frameCount++;
+                    if (now - lastTime > 1000) {
+                        fps = frameCount;
+                        frameCount = 0;
+                        lastTime = now;
+                        updateStatus('fpsStatus', fps.toString(), 'ok');
+                    }
+                    updateStatus('frameCount', frameCount.toString(), 'ok');
+
+                    // Update game
+                    wasmModule.update();
+
+                    // Render to buffer
+                    const pixelData = wasmModule.render();
+                    
+                    if (!pixelData || pixelData.length === 0) {
+                        throw new Error('render() returned empty data');
+                    }
+                    updateStatus('renderStatus', `${pixelData.length} pixels`, 'ok');
+
+                    // Draw to Canvas
+                    const imageData = ctx.createImageData(canvas.width, canvas.height);
+                    const data = imageData.data;
+                    
+                    // Palette: standard 16-color palette
+                    const palette = [
+                        [0, 0, 0],           // 0: Black
+                        [255, 0, 0],         // 1: Red
+                        [0, 255, 0],         // 2: Green
+                        [255, 255, 0],       // 3: Yellow
+                        [0, 0, 255],         // 4: Blue
+                        [255, 0, 255],       // 5: Magenta
+                        [0, 255, 255],       // 6: Cyan
+                        [255, 255, 255],     // 7: White
+                        [128, 128, 128],     // 8: Gray
+                        [255, 128, 128],     // 9: Light Red
+                        [128, 255, 128],     // 10: Light Green
+                        [255, 255, 128],     // 11: Light Yellow
+                        [128, 128, 255],     // 12: Light Blue
+                        [255, 128, 255],     // 13: Light Magenta
+                        [128, 255, 255],     // 14: Light Cyan
+                        [192, 192, 192],     // 15: Light Gray
+                    ];
+
+                    for (let i = 0; i < pixelData.length; i++) {
+                        const colorIdx = pixelData[i] & 0xFF;
+                        const rgb = palette[colorIdx] || [0, 0, 0];
+                        const dataIdx = i * 4;
+                        data[dataIdx] = rgb[0];
+                        data[dataIdx + 1] = rgb[1];
+                        data[dataIdx + 2] = rgb[2];
+                        data[dataIdx + 3] = 255;
+                    }
+                    
+                    ctx.putImageData(imageData, 0, 0);
+
+                } catch (err) {
+                    setError(`Game loop error: ${err.message}`);
+                    gameRunning = false;
+                    return;
+                }
+
+                requestAnimationFrame(gameLoop);
+            };
+
+            // Start game loop
+            gameLoop();
+
+            // Handle keyboard
+            console.log('\nStep 6: Setting up keyboard controls...');
+            document.addEventListener('keydown', (e) => {
+                const key = e.key.toLowerCase();
+                if (key === 'arrowleft') wasmModule.handle_input(0); // Left
+                if (key === 'arrowright') wasmModule.handle_input(1); // Right
+                if (key === ' ') wasmModule.handle_input(2); // Jump
+                if (key === 'r') {
+                    wasmModule.reset();
+                    console.log('Game reset');
+                }
+            });
+            console.log(`  ✓ Keyboard handlers registered`);
+
+            console.log('\n✅ GAMEPLAY TEST STARTED SUCCESSFULLY\n');
+
+        } catch (err) {
+            setError(`Initialization failed: ${err.message}`);
+            console.error('Full error:', err);
+        }
+    </script>
+</body>
+</html>

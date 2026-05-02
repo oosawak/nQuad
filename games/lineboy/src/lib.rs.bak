@@ -1,0 +1,331 @@
+// Lineboy WASM - Pure Rust Game Implementation
+// メモリ初期化を明示的に手動で行う
+
+use wasm_bindgen::prelude::*;
+use std::cell::RefCell;
+
+const WORLD_WIDTH: usize = 160;
+const WORLD_HEIGHT: usize = 120;
+const FRAMEBUFFER_SIZE: usize = WORLD_WIDTH * WORLD_HEIGHT;
+
+// パレット（16色）
+const PALETTE: [[u8; 3]; 16] = [
+    [0, 0, 0],           // 0: Black
+    [29, 43, 83],        // 1: Dark Blue
+    [126, 37, 83],       // 2: Dark Purple
+    [0, 135, 81],        // 3: Dark Green
+    [171, 82, 54],       // 4: Brown
+    [95, 87, 79],        // 5: Dark Gray
+    [194, 195, 199],     // 6: Light Gray
+    [255, 241, 232],     // 7: White
+    [255, 0, 77],        // 8: Red
+    [255, 163, 0],       // 9: Orange
+    [255, 236, 39],      // 10: Yellow
+    [0, 228, 54],        // 11: Green
+    [41, 173, 255],      // 12: Light Blue
+    [131, 118, 156],     // 13: Purple
+    [255, 119, 168],     // 14: Pink
+    [255, 204, 170],     // 15: Peach
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GameState {
+    Title = 0,
+    Playing = 1,
+    GameOver = 2,
+    Clear = 3,
+}
+
+#[derive(Debug, Clone)]
+struct Player {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+}
+
+#[derive(Debug, Clone)]
+struct Enemy {
+    x: f32,
+    y: f32,
+    direction: i32,
+    min_x: f32,
+    max_x: f32,
+}
+
+#[derive(Debug, Clone)]
+struct Game {
+    state: GameState,
+    player: Player,
+    enemies: Vec<Enemy>,
+    score: u32,
+    theme: u32,
+    time: u32,
+}
+
+thread_local! {
+    static GAME: RefCell<Option<Game>> = RefCell::new(None);
+}
+
+impl Game {
+    fn new() -> Self {
+        Game {
+            state: GameState::Title,
+            player: Player {
+                x: 75.0,
+                y: 100.0,
+                vx: 0.0,
+                vy: 0.0,
+            },
+            enemies: vec![
+                Enemy {
+                    x: 20.0,
+                    y: 40.0,
+                    direction: 1,
+                    min_x: 10.0,
+                    max_x: 100.0,
+                },
+                Enemy {
+                    x: 50.0,
+                    y: 60.0,
+                    direction: 1,
+                    min_x: 40.0,
+                    max_x: 130.0,
+                },
+            ],
+            score: 0,
+            theme: 0,
+            time: 0,
+        }
+    }
+
+    fn update(&mut self, left: bool, right: bool, jump: bool) {
+        match self.state {
+            GameState::Title => {
+                if jump {
+                    self.state = GameState::Playing;
+                }
+            }
+            GameState::Playing => {
+                const GRAVITY: f32 = 0.3;
+                const MOVE_SPEED: f32 = 1.5;
+                const JUMP_POWER: f32 = 5.0;
+
+                self.player.vx = 0.0;
+                if left {
+                    self.player.vx = -MOVE_SPEED;
+                }
+                if right {
+                    self.player.vx = MOVE_SPEED;
+                }
+
+                self.player.x += self.player.vx;
+                if self.player.x < 0.0 {
+                    self.player.x = 0.0;
+                }
+                if self.player.x > WORLD_WIDTH as f32 - 4.0 {
+                    self.player.x = WORLD_WIDTH as f32 - 4.0;
+                }
+
+                self.player.vy += GRAVITY;
+                self.player.y += self.player.vy;
+
+                // プラットフォーム衝突（簡易版）
+                let platforms = &[
+                    (0.0, 110.0, 160.0, 10.0),
+                    (30.0, 90.0, 40.0, 5.0),
+                    (90.0, 75.0, 40.0, 5.0),
+                    (50.0, 60.0, 40.0, 5.0),
+                    (100.0, 45.0, 40.0, 5.0),
+                ];
+
+                let mut on_ground = false;
+                for &(px, py, pw, _ph) in platforms {
+                    if self.player.x + 4.0 > px
+                        && self.player.x < px + pw
+                        && self.player.y + 4.0 >= py
+                        && self.player.y + 4.0 <= py + 3.0
+                        && self.player.vy >= 0.0
+                    {
+                        self.player.y = py - 4.0;
+                        self.player.vy = 0.0;
+                        on_ground = true;
+                    }
+                }
+
+                if jump && on_ground {
+                    self.player.vy = -JUMP_POWER;
+                }
+
+                if self.player.y > WORLD_HEIGHT as f32 {
+                    self.state = GameState::GameOver;
+                }
+
+                // 敵移動
+                for enemy in &mut self.enemies {
+                    enemy.x += enemy.direction as f32 * 0.5;
+                    if enemy.x < enemy.min_x || enemy.x > enemy.max_x {
+                        enemy.direction *= -1;
+                    }
+
+                    // 敵衝突判定
+                    if self.player.x < enemy.x + 3.0
+                        && self.player.x + 4.0 > enemy.x
+                        && self.player.y < enemy.y + 3.0
+                        && self.player.y + 4.0 > enemy.y
+                    {
+                        self.state = GameState::GameOver;
+                    }
+                }
+
+                // ゴール判定
+                if self.player.y < 20.0 {
+                    self.score += 100;
+                    self.theme += 1;
+                    if self.theme >= 5 {
+                        self.state = GameState::Clear;
+                    } else {
+                        self.player = Player {
+                            x: 75.0,
+                            y: 100.0,
+                            vx: 0.0,
+                            vy: 0.0,
+                        };
+                    }
+                }
+
+                self.time += 1;
+            }
+            GameState::GameOver => {
+                if jump {
+                    *self = Game::new();
+                    self.state = GameState::Playing;
+                }
+            }
+            GameState::Clear => {
+                if jump {
+                    *self = Game::new();
+                }
+            }
+        }
+    }
+
+    fn draw(&self) -> Vec<u8> {
+        let mut framebuffer = vec![0u8; FRAMEBUFFER_SIZE];
+
+        match self.state {
+            GameState::Title => {
+                for pixel in &mut framebuffer {
+                    *pixel = 0;
+                }
+            }
+            GameState::Playing => {
+                // 背景
+                for pixel in &mut framebuffer {
+                    *pixel = 2; // Green
+                }
+
+                // プラットフォーム
+                let platforms = &[
+                    (0, 110, 160, 10),
+                    (30, 90, 40, 5),
+                    (90, 75, 40, 5),
+                    (50, 60, 40, 5),
+                    (100, 45, 40, 5),
+                ];
+                for (x, y, w, h) in platforms {
+                    self.fill_rect(&mut framebuffer, *x, *y, *w, *h, 3);
+                }
+
+                // 敵
+                for enemy in &self.enemies {
+                    self.fill_rect(
+                        &mut framebuffer,
+                        enemy.x as usize,
+                        enemy.y as usize,
+                        3,
+                        3,
+                        8,
+                    );
+                }
+
+                // プレイヤー
+                self.fill_rect(
+                    &mut framebuffer,
+                    self.player.x as usize,
+                    self.player.y as usize,
+                    4,
+                    4,
+                    11,
+                );
+            }
+            GameState::GameOver => {
+                for pixel in &mut framebuffer {
+                    *pixel = 0;
+                }
+            }
+            GameState::Clear => {
+                for pixel in &mut framebuffer {
+                    *pixel = 0;
+                }
+            }
+        }
+
+        framebuffer
+    }
+
+    fn fill_rect(
+        &self,
+        framebuffer: &mut Vec<u8>,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        color: u8,
+    ) {
+        for py in y..y + h {
+            if py < WORLD_HEIGHT {
+                for px in x..x + w {
+                    if px < WORLD_WIDTH {
+                        framebuffer[py * WORLD_WIDTH + px] = color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// WASM Public API
+#[wasm_bindgen]
+pub fn init() {
+    GAME.with(|game| {
+        *game.borrow_mut() = Some(Game::new());
+    });
+}
+
+#[wasm_bindgen]
+pub fn update(left: bool, right: bool, jump: bool) {
+    GAME.with(|game| {
+        if let Some(ref mut g) = *game.borrow_mut() {
+            g.update(left, right, jump);
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn render() -> Vec<u8> {
+    GAME.with(|game| {
+        if let Some(g) = game.borrow().as_ref() {
+            g.draw()
+        } else {
+            vec![0; FRAMEBUFFER_SIZE]
+        }
+    })
+}
+
+#[wasm_bindgen]
+pub fn reset() {
+    GAME.with(|game| {
+        *game.borrow_mut() = Some(Game::new());
+    });
+}

@@ -1,0 +1,245 @@
+use std::fmt;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
+use zip::ZipArchive;
+
+use crate::image::{Color, Image, Rgb24};
+use crate::music::Music;
+use crate::pyxel::{self, Pyxel};
+use crate::settings::{
+    DEFAULT_SOUND_SPEED, NUM_CHANNELS, NUM_IMAGES, NUM_MUSICS, NUM_SOUNDS, NUM_TILEMAPS,
+    PALETTE_FILE_EXTENSION, TILEMAP_SIZE, VERSION,
+};
+use crate::sound::{Sound, SoundEffect, SoundNote, SoundTone, SoundVolume};
+use crate::tilemap::{ImageSource, ImageTileCoord, Tilemap};
+use crate::utils::{parse_hex_string, simplify_string};
+
+pub const RESOURCE_ARCHIVE_DIRNAME: &str = "pyxel_resource/";
+
+trait ResourceItem {
+    fn resource_name(item_index: u32) -> String;
+    fn clear(&mut self);
+    fn deserialize(&mut self, version: u32, input: &str);
+}
+
+impl fmt::Display for ImageSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImageSource::Index(index) => write!(f, "{index}"),
+            ImageSource::Image(_) => write!(f, "0"),
+        }
+    }
+}
+
+impl ResourceItem for Image {
+    fn resource_name(item_index: u32) -> String {
+        format!("{RESOURCE_ARCHIVE_DIRNAME}image{item_index}")
+    }
+
+    fn clear(&mut self) {
+        self.clear(0);
+    }
+
+    fn deserialize(&mut self, _version: u32, input: &str) {
+        for (i, line) in input.lines().enumerate() {
+            string_loop!(j, color, line, 1, {
+                self.canvas
+                    .write_data(j, i, parse_hex_string(color).unwrap() as Color);
+            });
+        }
+    }
+}
+
+impl ResourceItem for Tilemap {
+    fn resource_name(item_index: u32) -> String {
+        format!("{RESOURCE_ARCHIVE_DIRNAME}tilemap{item_index}")
+    }
+
+    fn clear(&mut self) {
+        self.clear((0, 0));
+    }
+
+    fn deserialize(&mut self, version: u32, input: &str) {
+        for (y, line) in input.lines().enumerate() {
+            if y < TILEMAP_SIZE as usize {
+                if version < 10500 {
+                    string_loop!(x, tile, line, 3, {
+                        let tile = parse_hex_string(tile).unwrap();
+                        self.canvas.write_data(
+                            x,
+                            y,
+                            ((tile % 32) as ImageTileCoord, (tile / 32) as ImageTileCoord),
+                        );
+                    });
+                } else {
+                    string_loop!(x, tile, line, 4, {
+                        let tile_x = parse_hex_string(&tile[0..2]).unwrap();
+                        let tile_y = parse_hex_string(&tile[2..4]).unwrap();
+                        self.canvas.write_data(
+                            x,
+                            y,
+                            (tile_x as ImageTileCoord, tile_y as ImageTileCoord),
+                        );
+                    });
+                }
+            } else {
+                self.imgsrc = ImageSource::Index(line.parse::<usize>().unwrap() as u32);
+            }
+        }
+    }
+}
+
+impl ResourceItem for Sound {
+    fn resource_name(item_index: u32) -> String {
+        format!("{RESOURCE_ARCHIVE_DIRNAME}sound{item_index:02}")
+    }
+
+    fn clear(&mut self) {
+        self.notes.clear();
+        self.tones.clear();
+        self.volumes.clear();
+        self.effects.clear();
+        self.speed = DEFAULT_SOUND_SPEED;
+    }
+
+    fn deserialize(&mut self, _version: u32, input: &str) {
+        self.clear();
+
+        for (i, line) in input.lines().enumerate() {
+            if line == "none" {
+                continue;
+            }
+            match i {
+                0 => string_loop!(j, value, line, 2, {
+                    self.notes
+                        .push(parse_hex_string(value).unwrap() as i8 as SoundNote);
+                }),
+                1 => string_loop!(j, value, line, 1, {
+                    self.tones
+                        .push(parse_hex_string(value).unwrap() as SoundTone);
+                }),
+                2 => string_loop!(j, value, line, 1, {
+                    self.volumes
+                        .push(parse_hex_string(value).unwrap() as SoundVolume);
+                }),
+                3 => string_loop!(j, value, line, 1, {
+                    self.effects
+                        .push(parse_hex_string(value).unwrap() as SoundEffect);
+                }),
+                4 => self.speed = line.parse().unwrap(),
+                _ => {}
+            }
+        }
+    }
+}
+
+impl ResourceItem for Music {
+    fn resource_name(item_index: u32) -> String {
+        format!("{RESOURCE_ARCHIVE_DIRNAME}music{item_index}")
+    }
+
+    fn clear(&mut self) {
+        self.seqs = vec![Vec::new(); NUM_CHANNELS as usize];
+    }
+
+    fn deserialize(&mut self, _version: u32, input: &str) {
+        self.clear();
+
+        for (i, line) in input.lines().enumerate() {
+            if line == "none" {
+                continue;
+            }
+            string_loop!(j, value, line, 2, {
+                self.seqs[i].push(parse_hex_string(value).unwrap());
+            });
+        }
+    }
+}
+
+impl Pyxel {
+    pub fn load_old_resource(
+        &mut self,
+        archive: &mut ZipArchive<File>,
+        filename: &str,
+        include_images: bool,
+        include_tilemaps: bool,
+        include_sounds: bool,
+        include_musics: bool,
+    ) {
+        let version_name = format!("{RESOURCE_ARCHIVE_DIRNAME}version");
+        let contents = {
+            let mut file = archive.by_name(&version_name).unwrap();
+            let mut contents = String::new();
+            file.read_to_string(&mut contents).unwrap();
+            contents
+        };
+        let version = parse_version_string(&contents).unwrap();
+        assert!(
+            version <= parse_version_string(VERSION).unwrap(),
+            "Unsupported resource file version '{contents}'"
+        );
+
+        macro_rules! deserialize {
+            ($type: ty, $accessor: expr, $count: expr) => {
+                for i in 0..$count {
+                    let item = unsafe { &mut *$accessor[i as usize] };
+                    if let Ok(mut file) = archive.by_name(&<$type>::resource_name(i)) {
+                        let mut input = String::new();
+                        file.read_to_string(&mut input).unwrap();
+                        item.deserialize(version, &input);
+                    } else {
+                        ResourceItem::clear(item);
+                    }
+                }
+            };
+        }
+
+        if include_images {
+            deserialize!(Image, pyxel::images(), NUM_IMAGES);
+        }
+        if include_tilemaps {
+            deserialize!(Tilemap, pyxel::tilemaps(), NUM_TILEMAPS);
+        }
+        if include_sounds {
+            deserialize!(Sound, pyxel::sounds(), NUM_SOUNDS);
+        }
+        if include_musics {
+            deserialize!(Music, pyxel::musics(), NUM_MUSICS);
+        }
+
+        // Try to load Pyxel palette file
+        let filename = filename
+            .rfind('.')
+            .map_or(filename, |i| &filename[..i])
+            .to_string()
+            + PALETTE_FILE_EXTENSION;
+
+        if let Ok(mut file) = File::open(Path::new(&filename)) {
+            let mut contents = String::new();
+            file.read_to_string(&mut contents).unwrap();
+
+            let colors: Vec<Rgb24> = contents
+                .lines()
+                .filter(|s| !s.is_empty())
+                .map(|s| u32::from_str_radix(s.trim(), 16).unwrap() as Rgb24)
+                .collect();
+
+            *pyxel::colors() = colors;
+        }
+    }
+}
+
+fn parse_version_string(string: &str) -> Result<u32, &str> {
+    let mut version = 0u32;
+    for (i, part) in simplify_string(string).split('.').enumerate() {
+        let len = part.len();
+        if i > 0 && len != 1 && len != 2 {
+            return Err("invalid version string");
+        }
+        let n: u32 = part.parse().map_err(|_| "invalid version string")?;
+        version = version * 100 + n;
+    }
+    Ok(version)
+}

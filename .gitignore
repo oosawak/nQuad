@@ -1,0 +1,38 @@
+/target/
+Cargo.lock
+**/*.rs.bk
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Build artifacts
+/pkg/
+/wasm-builds/
+*.wasm
+*.wasm.d.ts
+wasm-build.log
+
+# Logs
+*.log
+test_results.log
+
+# External projects
+../Cubeboy_github/
+../Lineboy_github/
+../test_game_final/
+../test_game_npm/
+../cubeboy_rust/
+../pyxel-rust/
+../pyodide/
+
+# Development server
+ecosystem.config.js
+server.js
+start-http-server.sh
+start-server.sh
+
+# Test/debug HTML files
+web/*_test.html
+web/*_debug*.html
+web/test_canvas.html

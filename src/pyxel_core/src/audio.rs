@@ -1,0 +1,267 @@
+#[cfg(pyxel_core)]
+use std::env::temp_dir;
+#[cfg(pyxel_core)]
+use std::fs::{remove_file, write};
+#[cfg(pyxel_core)]
+use std::process::Command;
+
+use blip_buf::BlipBuf;
+#[cfg(pyxel_core)]
+use hound::{SampleFormat, WavSpec, WavWriter};
+
+use crate::channel::Channel;
+use crate::pyxel::{self, Pyxel};
+use crate::settings::{
+    AUDIO_BUFFER_SAMPLES, AUDIO_CLOCKS_PER_SAMPLE, AUDIO_CLOCK_RATE, AUDIO_RENDER_STEP_SAMPLES,
+    AUDIO_SAMPLE_RATE,
+};
+use crate::sound::Sound;
+use crate::{platform, utils};
+
+pub struct Audio;
+
+struct AudioLock;
+
+struct AudioStreamRenderer {
+    blip_buf: BlipBuf,
+}
+
+impl AudioLock {
+    fn new() -> Self {
+        platform::lock_audio();
+        Self
+    }
+}
+
+impl Drop for AudioLock {
+    fn drop(&mut self) {
+        platform::unlock_audio();
+    }
+}
+
+impl AudioStreamRenderer {
+    fn new() -> Self {
+        let mut blip_buf = BlipBuf::new(AUDIO_BUFFER_SAMPLES);
+        blip_buf.set_rates(AUDIO_CLOCK_RATE as f64, AUDIO_SAMPLE_RATE as f64);
+
+        Self { blip_buf }
+    }
+
+    fn render(&mut self, out: &mut [i16]) {
+        let channels = pyxel::channels();
+        Audio::render_samples(channels, &mut self.blip_buf, out);
+    }
+}
+
+impl Audio {
+    pub fn start() {
+        let mut stream_renderer = AudioStreamRenderer::new();
+
+        platform::start_audio(
+            AUDIO_SAMPLE_RATE,
+            AUDIO_BUFFER_SAMPLES,
+            move |out: &mut [i16]| {
+                stream_renderer.render(out);
+            },
+        );
+    }
+
+    pub fn render_samples(channels: &[*mut Channel], blip_buf: &mut BlipBuf, out: &mut [i16]) {
+        let needs_blip = channels
+            .iter()
+            .any(|&ch| unsafe { &*ch }.needs_blip_processing());
+        let needs_pcm = channels.iter().any(|&ch| unsafe { &*ch }.is_playing_pcm());
+        let mut written = blip_buf.read_samples(out, false);
+
+        if needs_blip {
+            while written < out.len() {
+                let target_samples = ((out.len() - written) as u32).min(AUDIO_RENDER_STEP_SAMPLES);
+                let clocks = match blip_buf.clocks_needed(target_samples) {
+                    0 => AUDIO_CLOCKS_PER_SAMPLE,
+                    clocks => clocks,
+                };
+
+                for &ch in channels {
+                    let channel = unsafe { &mut *ch };
+                    if channel.needs_blip_processing() {
+                        channel.process(Some(blip_buf), clocks);
+                    }
+                }
+
+                blip_buf.end_frame(clocks);
+                written += blip_buf.read_samples(&mut out[written..], false);
+            }
+        } else if written < out.len() {
+            out[written..].fill(0);
+        }
+
+        if needs_pcm {
+            for &ch in channels {
+                let channel = unsafe { &mut *ch };
+                if channel.is_playing_pcm() {
+                    channel.mix_pcm(out);
+                }
+            }
+        }
+    }
+
+    #[cfg(pyxel_core)]
+    pub fn save_samples(filename: &str, samples: &[i16], use_ffmpeg: bool) -> Result<(), String> {
+        // Save WAV file
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: AUDIO_SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let filename = utils::add_file_extension(filename, ".wav");
+        let save_err = || format!("Failed to save file '{filename}'");
+        let mut writer = WavWriter::create(&filename, spec)
+            .map_err(|_| format!("Failed to create file '{filename}'"))?;
+
+        for &sample in samples {
+            writer.write_sample(sample).map_err(|_| save_err())?;
+        }
+        writer.finalize().map_err(|_| save_err())?;
+
+        // Save MP4 file
+        if !use_ffmpeg {
+            return Ok(());
+        }
+
+        let image_data = include_bytes!("assets/pyxel_logo_152x64.png");
+        let image_path = temp_dir().join("pyxel_mp4_image.png");
+        let png_file = image_path
+            .to_str()
+            .ok_or_else(|| "Failed to create temporary file path".to_string())?;
+        let wav_file = &filename;
+        let mp4_file = filename.replace(".wav", ".mp4");
+
+        write(&image_path, image_data).map_err(|_| "Failed to save temporary file".to_string())?;
+        Command::new("ffmpeg")
+            .args([
+                "-loop",
+                "1",
+                "-i",
+                png_file,
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=480x360",
+                "-i",
+                wav_file,
+                "-filter_complex",
+                "[1][0]overlay=(W-w)/2:(H-h)/2",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                &mp4_file,
+                "-y",
+            ])
+            .output()
+            .map_err(|_| "Failed to execute FFmpeg".to_string())?;
+
+        let _ = remove_file(png_file);
+        Ok(())
+    }
+}
+
+impl Pyxel {
+    // Playback
+
+    pub fn play(
+        &self,
+        channel_index: u32,
+        sequence: &[u32],
+        start_sec: Option<f32>,
+        should_loop: bool,
+        should_resume: bool,
+    ) {
+        if sequence.is_empty() {
+            return;
+        }
+
+        let pyxel_sounds = pyxel::sounds();
+        let sounds: Vec<*mut Sound> = sequence
+            .iter()
+            .map(|&index| pyxel_sounds[index as usize])
+            .collect();
+
+        let _lock = AudioLock::new();
+        unsafe { &mut *pyxel::channels()[channel_index as usize] }.play(
+            sounds,
+            start_sec,
+            should_loop,
+            should_resume,
+        );
+    }
+
+    pub fn play_sound(
+        &self,
+        channel_index: u32,
+        sound_index: u32,
+        start_sec: Option<f32>,
+        should_loop: bool,
+        should_resume: bool,
+    ) {
+        let sound = pyxel::sounds()[sound_index as usize];
+
+        let _lock = AudioLock::new();
+        unsafe { &mut *pyxel::channels()[channel_index as usize] }.play_sound(
+            sound,
+            start_sec,
+            should_loop,
+            should_resume,
+        );
+    }
+
+    pub fn play_mml(
+        &mut self,
+        channel_index: u32,
+        code: &str,
+        start_sec: Option<f32>,
+        should_loop: bool,
+        should_resume: bool,
+    ) -> Result<(), String> {
+        let _lock = AudioLock::new();
+        unsafe { &mut *pyxel::channels()[channel_index as usize] }.play_mml(
+            code,
+            start_sec,
+            should_loop,
+            should_resume,
+        )
+    }
+
+    pub fn play_music(&self, music_index: u32, start_sec: Option<f32>, should_loop: bool) {
+        let music = unsafe { &*pyxel::musics()[music_index as usize] };
+
+        for (i, seq) in music.seqs.iter().enumerate().take(pyxel::channels().len()) {
+            self.play(i as u32, seq, start_sec, should_loop, false);
+        }
+    }
+
+    // Stop
+
+    pub fn stop_channel(&self, channel_index: u32) {
+        let _lock = AudioLock::new();
+        unsafe { &mut *pyxel::channels()[channel_index as usize] }.stop();
+    }
+
+    pub fn stop_all_channels(&self) {
+        let _lock = AudioLock::new();
+        for &ch in pyxel::channels().iter() {
+            unsafe { &mut *ch }.stop();
+        }
+    }
+
+    // Position
+
+    pub fn play_position(&self, channel_index: u32) -> Option<(u32, f32)> {
+        let _lock = AudioLock::new();
+        unsafe { &mut *pyxel::channels()[channel_index as usize] }.play_position()
+    }
+}

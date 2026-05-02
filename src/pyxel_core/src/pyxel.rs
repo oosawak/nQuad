@@ -1,0 +1,351 @@
+use std::array;
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::audio::Audio;
+use crate::canvas::Canvas;
+use crate::channel::Channel;
+use crate::graphics::Graphics;
+use crate::image::{Color, Image, Rgb24};
+use crate::input::Input;
+use crate::key::Key;
+use crate::music::Music;
+use crate::platform;
+use crate::resource::Resource;
+use crate::settings::{
+    CURSOR_DATA, CURSOR_HEIGHT, CURSOR_WIDTH, DEFAULT_COLORS, DEFAULT_FPS, DEFAULT_QUIT_KEY,
+    DEFAULT_TITLE, DEFAULT_TONE_NOISE, DEFAULT_TONE_PULSE, DEFAULT_TONE_SQUARE,
+    DEFAULT_TONE_TRIANGLE, FONT_DATA, FONT_HEIGHT, FONT_WIDTH, ICON_COLKEY, ICON_DATA, ICON_SCALE,
+    IMAGE_SIZE, NUM_CHANNELS, NUM_FONT_COLS, NUM_IMAGES, NUM_MUSICS, NUM_SOUNDS, NUM_TILEMAPS,
+    NUM_TONES, TILEMAP_SIZE, WINDOW_TO_DISPLAY_RATIO,
+};
+use crate::sound::Sound;
+use crate::system::System;
+use crate::tilemap::{ImageSource, Tilemap};
+use crate::tone::Tone;
+
+static IS_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+// Singleton
+static mut PYXEL: *mut Pyxel = null_mut();
+
+pub fn pyxel() -> &'static mut Pyxel {
+    unsafe {
+        assert!(!PYXEL.is_null(), "Pyxel not initialized");
+        &mut *PYXEL
+    }
+}
+
+fn set_pyxel(instance: Pyxel) {
+    unsafe {
+        PYXEL = Box::into_raw(Box::new(instance));
+    }
+}
+
+static mut RESET_CALLBACK: Option<Box<dyn FnMut() + Send>> = None;
+
+pub fn reset_callback() -> &'static mut Option<Box<dyn FnMut() + Send>> {
+    unsafe { &mut RESET_CALLBACK }
+}
+
+static mut QUIT_CALLBACK: Option<Box<dyn FnMut() + Send>> = None;
+
+pub fn quit_callback() -> &'static mut Option<Box<dyn FnMut() + Send>> {
+    unsafe { &mut QUIT_CALLBACK }
+}
+
+// Macros for global variables
+macro_rules! define_static {
+    ($func:ident, $static:ident, $type:ty, $default:expr) => {
+        static mut $static: $type = $default;
+        pub fn $func() -> &'static mut $type {
+            unsafe { &mut $static }
+        }
+    };
+}
+
+macro_rules! define_global {
+    ($func:ident, $static:ident, $type:ty, $init:expr) => {
+        static mut $static: *mut $type = null_mut();
+        pub fn $func() -> &'static mut $type {
+            unsafe {
+                if $static.is_null() {
+                    $static = Box::into_raw(Box::new($init));
+                }
+                &mut *$static
+            }
+        }
+    };
+}
+
+// System
+define_static!(is_headless, IS_HEADLESS, bool, false);
+define_static!(width, WIDTH, u32, 0);
+define_static!(height, HEIGHT, u32, 0);
+define_static!(frame_count, FRAME_COUNT, u32, 0);
+
+// Input
+define_static!(mouse_x, MOUSE_X, i32, 0);
+define_static!(mouse_y, MOUSE_Y, i32, 0);
+define_static!(mouse_wheel, MOUSE_WHEEL, i32, 0);
+define_static!(input_keys, INPUT_KEYS, Vec<Key>, Vec::new());
+define_static!(input_text, INPUT_TEXT, String, String::new());
+define_static!(dropped_files, DROPPED_FILES, Vec<String>, Vec::new());
+
+// Graphics
+define_global!(colors, COLORS, Vec<Rgb24>, DEFAULT_COLORS.to_vec());
+define_global!(images, IMAGES, Vec<*mut Image>, init_images());
+define_global!(tilemaps, TILEMAPS, Vec<*mut Tilemap>, init_tilemaps());
+define_global!(screen, SCREEN, Image, init_screen());
+define_global!(cursor_image, CURSOR_IMAGE, Image, init_cursor_image());
+define_global!(font_image, FONT_IMAGE, Image, init_font_image());
+
+// Audio
+define_global!(channels, CHANNELS, Vec<*mut Channel>, init_channels());
+define_global!(tones, TONES, Vec<*mut Tone>, init_tones());
+define_global!(sounds, SOUNDS, Vec<*mut Sound>, init_sounds());
+define_global!(musics, MUSICS, Vec<*mut Music>, init_musics());
+
+pub struct Pyxel {
+    pub(crate) system: System,
+    pub(crate) resource: Resource,
+    pub(crate) input: Input,
+    pub(crate) graphics: Option<Graphics>,
+}
+
+pub fn init(
+    w: u32,
+    h: u32,
+    title: Option<&str>,
+    fps: Option<u32>,
+    quit_key: Option<Key>,
+    display_scale: Option<u32>,
+    capture_scale: Option<u32>,
+    capture_sec: Option<u32>,
+    headless: Option<bool>,
+) {
+    assert!(
+        !IS_INITIALIZED.swap(true, Ordering::Relaxed),
+        "Pyxel already initialized"
+    );
+
+    let headless = headless.unwrap_or(false);
+    *is_headless() = headless;
+
+    // Set dimensions
+    *width() = w;
+    *height() = h;
+    *frame_count() = 0;
+
+    // Default parameters
+    let title = title.unwrap_or(DEFAULT_TITLE);
+    let quit_key = quit_key.unwrap_or(DEFAULT_QUIT_KEY);
+    let fps = fps.unwrap_or(DEFAULT_FPS);
+
+    // Platform
+    platform::init(headless);
+
+    if !headless {
+        let (display_width, display_height) = platform::display_size();
+        let display_scale = display_scale
+            .unwrap_or(
+                (f32::min(
+                    display_width as f32 / w as f32,
+                    display_height as f32 / h as f32,
+                ) * WINDOW_TO_DISPLAY_RATIO) as u32,
+            )
+            .max(1);
+        let window_width = w * display_scale;
+        let window_height = h * display_scale;
+
+        platform::init_window(title, window_width, window_height);
+    }
+
+    // Resize screen
+    screen().canvas = Canvas::new(w, h);
+    screen().palette = array::from_fn(|i| i as Color);
+
+    // Reset input
+    *mouse_x() = 0;
+    *mouse_y() = 0;
+    *mouse_wheel() = 0;
+    input_keys().clear();
+    input_text().clear();
+    dropped_files().clear();
+
+    // Build Pyxel instance
+    let system = System::new(fps, quit_key, headless);
+    let resource = Resource::new(capture_scale, capture_sec, fps);
+    let input = Input::new();
+    let graphics = if headless {
+        None
+    } else {
+        Some(Graphics::new())
+    };
+
+    set_pyxel(Pyxel {
+        system,
+        resource,
+        input,
+        graphics,
+    });
+
+    Audio::start();
+    if !headless {
+        pyxel().update_screen_params();
+        pyxel().set_icon(&ICON_DATA, ICON_SCALE, ICON_COLKEY);
+    }
+}
+
+#[cfg(target_os = "emscripten")]
+pub fn reset_statics() {
+    IS_INITIALIZED.store(false, Ordering::Relaxed);
+
+    // Reset scalar statics
+    *is_headless() = false;
+    *width() = 0;
+    *height() = 0;
+    *frame_count() = 0;
+    *mouse_x() = 0;
+    *mouse_y() = 0;
+    *mouse_wheel() = 0;
+    input_keys().clear();
+    input_text().clear();
+    dropped_files().clear();
+
+    // Reset heap globals
+    macro_rules! drop_global {
+        ($static:ident) => {
+            unsafe {
+                if !$static.is_null() {
+                    drop(Box::from_raw($static));
+                    $static = null_mut();
+                }
+            }
+        };
+        (vec: $static:ident) => {
+            unsafe {
+                if !$static.is_null() {
+                    for &item in &*$static {
+                        if !item.is_null() {
+                            drop(Box::from_raw(item));
+                        }
+                    }
+                    drop(Box::from_raw($static));
+                    $static = null_mut();
+                }
+            }
+        };
+    }
+
+    drop_global!(COLORS);
+    drop_global!(vec: IMAGES);
+    drop_global!(vec: TILEMAPS);
+    drop_global!(SCREEN);
+    drop_global!(CURSOR_IMAGE);
+    drop_global!(FONT_IMAGE);
+    drop_global!(vec: CHANNELS);
+    drop_global!(vec: TONES);
+    drop_global!(vec: SOUNDS);
+    drop_global!(vec: MUSICS);
+
+    unsafe {
+        RESET_CALLBACK = None;
+        QUIT_CALLBACK = None;
+    }
+}
+
+// Init functions for define_global!
+
+fn init_images() -> Vec<*mut Image> {
+    (0..NUM_IMAGES)
+        .map(|_| Image::new(IMAGE_SIZE, IMAGE_SIZE))
+        .collect()
+}
+
+fn init_tilemaps() -> Vec<*mut Tilemap> {
+    (0..NUM_TILEMAPS)
+        .map(|_| Tilemap::new(TILEMAP_SIZE, TILEMAP_SIZE, ImageSource::Index(0)))
+        .collect()
+}
+
+fn init_screen() -> Image {
+    Image {
+        canvas: Canvas::new(0, 0),
+        palette: array::from_fn(|i| i as Color),
+        palette_is_identity: true,
+    }
+}
+
+fn init_cursor_image() -> Image {
+    let mut image = Image {
+        canvas: Canvas::new(CURSOR_WIDTH, CURSOR_HEIGHT),
+        palette: array::from_fn(|i| i as Color),
+        palette_is_identity: true,
+    };
+    image.set(0, 0, &CURSOR_DATA);
+    image
+}
+
+fn init_font_image() -> Image {
+    let w = FONT_WIDTH * NUM_FONT_COLS;
+    let h = FONT_HEIGHT * (FONT_DATA.len() as u32).div_ceil(NUM_FONT_COLS);
+    let mut image = Image {
+        canvas: Canvas::new(w, h),
+        palette: array::from_fn(|i| i as Color),
+        palette_is_identity: true,
+    };
+    for (i, data) in FONT_DATA.iter().enumerate() {
+        let row = i as u32 / NUM_FONT_COLS;
+        let col = i as u32 % NUM_FONT_COLS;
+        let mut data = *data;
+        for yi in 0..FONT_HEIGHT {
+            for xi in 0..FONT_WIDTH {
+                let x = FONT_WIDTH * col + xi;
+                let y = FONT_HEIGHT * row + yi;
+                let color = Color::from((data & 0x0080_0000) != 0);
+                image.canvas.write_data(x as usize, y as usize, color);
+                data <<= 1;
+            }
+        }
+    }
+    image
+}
+
+fn init_channels() -> Vec<*mut Channel> {
+    (0..NUM_CHANNELS).map(|_| Channel::new()).collect()
+}
+
+fn init_tones() -> Vec<*mut Tone> {
+    macro_rules! set_tone {
+        ($tone:expr, $default:ident) => {{
+            $tone.mode = $default.0;
+            $tone.sample_bits = $default.1;
+            $tone.wavetable = $default.2.to_vec();
+            $tone.gain = $default.3;
+        }};
+    }
+
+    (0..NUM_TONES)
+        .map(|index| {
+            let tone = Tone::new();
+            let t = unsafe { &mut *tone };
+            match index {
+                0 => set_tone!(t, DEFAULT_TONE_TRIANGLE),
+                1 => set_tone!(t, DEFAULT_TONE_SQUARE),
+                2 => set_tone!(t, DEFAULT_TONE_PULSE),
+                3 => set_tone!(t, DEFAULT_TONE_NOISE),
+                _ => unreachable!(),
+            }
+            tone
+        })
+        .collect()
+}
+
+fn init_sounds() -> Vec<*mut Sound> {
+    (0..NUM_SOUNDS).map(|_| Sound::new()).collect()
+}
+
+fn init_musics() -> Vec<*mut Music> {
+    (0..NUM_MUSICS).map(|_| Music::new()).collect()
+}

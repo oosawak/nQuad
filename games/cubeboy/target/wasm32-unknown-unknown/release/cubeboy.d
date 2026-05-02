@@ -1,0 +1,1 @@
+/home/oosawak/Workspace/Nantaraquad/games/cubeboy/target/wasm32-unknown-unknown/release/cubeboy.wasm: /home/oosawak/Workspace/Nantaraquad/games/cubeboy/src/lib.rs /home/oosawak/Workspace/Nantaraquad/games/cubeboy/src/pyxel_api.rs

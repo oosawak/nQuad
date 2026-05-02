@@ -1,0 +1,409 @@
+use blip_buf::BlipBuf;
+
+use crate::audio::Audio;
+use crate::mml_command::MmlCommand;
+use crate::mml_parser::{parse_mml, total_duration_sec};
+use crate::old_mml_parser::parse_old_mml;
+use crate::pcm_decoder::{load_pcm, PcmData};
+use crate::pyxel;
+use crate::settings::{
+    AUDIO_CLOCK_RATE, AUDIO_SAMPLE_RATE, DEFAULT_SOUND_SPEED, EFFECT_FADEOUT, EFFECT_HALF_FADEOUT,
+    EFFECT_NONE, EFFECT_QUARTER_FADEOUT, EFFECT_SLIDE, EFFECT_VIBRATO, MAX_VOLUME,
+    SOUND_TICKS_PER_SECOND, TONE_NOISE, TONE_PULSE, TONE_SQUARE, TONE_TRIANGLE,
+    VIBRATO_DEPTH_CENTS, VIBRATO_PERIOD_TICKS,
+};
+use crate::tone::ToneMode;
+use crate::utils::simplify_string;
+
+pub type SoundNote = i8;
+pub type SoundTone = u8;
+pub type SoundVolume = u8;
+pub type SoundEffect = u8;
+pub type SoundSpeed = u16;
+
+#[derive(Clone)]
+pub struct Sound {
+    pub notes: Vec<SoundNote>,
+    pub tones: Vec<SoundTone>,
+    pub volumes: Vec<SoundVolume>,
+    pub effects: Vec<SoundEffect>,
+    pub speed: SoundSpeed,
+
+    pub(crate) commands: Vec<MmlCommand>,
+    pub(crate) pcm: Option<PcmData>,
+}
+
+impl Sound {
+    pub fn new() -> *mut Sound {
+        Box::into_raw(Box::new(Self {
+            notes: Vec::new(),
+            tones: Vec::new(),
+            volumes: Vec::new(),
+            effects: Vec::new(),
+            speed: DEFAULT_SOUND_SPEED,
+
+            commands: Vec::new(),
+            pcm: None,
+        }))
+    }
+
+    // Configuration
+
+    pub fn set(
+        &mut self,
+        note_str: &str,
+        tone_str: &str,
+        volume_str: &str,
+        effect_str: &str,
+        speed: SoundSpeed,
+    ) -> Result<(), String> {
+        self.set_notes(note_str)?;
+        self.set_tones(tone_str)?;
+        self.set_volumes(volume_str)?;
+        self.set_effects(effect_str)?;
+        self.speed = speed;
+        Ok(())
+    }
+
+    pub fn set_notes(&mut self, note_str: &str) -> Result<(), String> {
+        let note_str = simplify_string(note_str);
+        let mut chars = note_str.chars();
+        self.notes.clear();
+
+        while let Some(c) = chars.next() {
+            let mut note: SoundNote;
+            if ('a'..='g').contains(&c) {
+                note = match c {
+                    'c' => 0,
+                    'd' => 2,
+                    'e' => 4,
+                    'f' => 5,
+                    'g' => 7,
+                    'a' => 9,
+                    'b' => 11,
+                    _ => return Err(format!("Invalid sound note '{c}'")),
+                };
+
+                let mut c = chars.next().unwrap_or('\0');
+                if c == '#' {
+                    note += 1;
+                    c = chars.next().unwrap_or('\0');
+                } else if c == '-' {
+                    note -= 1;
+                    c = chars.next().unwrap_or('\0');
+                }
+
+                if ('0'..='4').contains(&c) {
+                    note += (c.to_digit(10).unwrap() as SoundNote) * 12;
+                } else {
+                    return Err(format!("Invalid sound note '{c}'"));
+                }
+            } else if c == 'r' {
+                note = -1;
+            } else {
+                return Err(format!("Invalid sound note '{c}'"));
+            }
+            self.notes.push(note);
+        }
+        Ok(())
+    }
+
+    pub fn set_tones(&mut self, tone_str: &str) -> Result<(), String> {
+        self.tones.clear();
+        for c in simplify_string(tone_str).chars() {
+            let tone = match c {
+                't' => TONE_TRIANGLE,
+                's' => TONE_SQUARE,
+                'p' => TONE_PULSE,
+                'n' => TONE_NOISE,
+                '0'..='9' => c.to_digit(10).unwrap() as SoundTone,
+                _ => return Err(format!("Invalid sound tone '{c}'")),
+            };
+            self.tones.push(tone);
+        }
+        Ok(())
+    }
+
+    pub fn set_volumes(&mut self, volume_str: &str) -> Result<(), String> {
+        self.volumes.clear();
+        for c in simplify_string(volume_str).chars() {
+            if ('0'..='7').contains(&c) {
+                self.volumes.push(c.to_digit(10).unwrap() as SoundVolume);
+            } else {
+                return Err(format!("Invalid sound volume '{c}'"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_effects(&mut self, effect_str: &str) -> Result<(), String> {
+        self.effects.clear();
+        for c in simplify_string(effect_str).chars() {
+            let effect = match c {
+                'n' => EFFECT_NONE,
+                's' => EFFECT_SLIDE,
+                'v' => EFFECT_VIBRATO,
+                'f' => EFFECT_FADEOUT,
+                'h' => EFFECT_HALF_FADEOUT,
+                'q' => EFFECT_QUARTER_FADEOUT,
+                _ => return Err(format!("Invalid sound effect '{c}'")),
+            };
+            self.effects.push(effect);
+        }
+        Ok(())
+    }
+
+    // MML & PCM
+
+    pub fn set_mml(&mut self, code: &str) -> Result<(), String> {
+        self.clear_pcm();
+        self.commands = parse_mml(code)?;
+        Ok(())
+    }
+
+    pub fn clear_mml(&mut self) {
+        self.commands.clear();
+    }
+
+    pub fn old_mml(&mut self, code: &str) -> Result<(), String> {
+        self.clear_pcm();
+        self.commands = parse_old_mml(code)?;
+        Ok(())
+    }
+
+    pub fn load_pcm(&mut self, filename: &str) -> Result<(), String> {
+        self.clear_mml();
+
+        let pcm = load_pcm(filename, AUDIO_SAMPLE_RATE)?;
+        self.pcm = Some(pcm);
+        Ok(())
+    }
+
+    pub fn clear_pcm(&mut self) {
+        self.pcm = None;
+    }
+
+    // Serialization
+
+    #[cfg(pyxel_core)]
+    pub fn save(
+        &self,
+        filename: &str,
+        duration_sec: f32,
+        use_ffmpeg: Option<bool>,
+    ) -> Result<(), String> {
+        if duration_sec <= 0.0 {
+            return Err("duration_sec must be greater than 0".to_string());
+        }
+
+        let num_samples = (duration_sec * AUDIO_SAMPLE_RATE as f32).round() as u32;
+        if num_samples == 0 {
+            return Ok(());
+        }
+
+        let mut samples = vec![0; num_samples as usize];
+        let mut blip_buf = BlipBuf::new(num_samples);
+        blip_buf.set_rates(AUDIO_CLOCK_RATE as f64, AUDIO_SAMPLE_RATE as f64);
+
+        let channels = pyxel::channels();
+        for &ch in channels.iter() {
+            unsafe { &mut *ch }.stop();
+        }
+
+        let temp_sound = Box::into_raw(Box::new(self.clone()));
+        unsafe { &mut *channels[0] }.play(vec![temp_sound], None, true, false);
+        Audio::render_samples(channels.as_slice(), &mut blip_buf, &mut samples);
+        for &ch in channels.iter() {
+            unsafe { &mut *ch }.stop();
+        }
+        unsafe {
+            drop(Box::from_raw(temp_sound));
+        }
+        Audio::save_samples(filename, &samples, use_ffmpeg.unwrap_or(false))
+    }
+
+    pub fn total_seconds(&self) -> Option<f32> {
+        if let Some(pcm) = &self.pcm {
+            Some(pcm.samples.len() as f32 / AUDIO_SAMPLE_RATE as f32)
+        } else if self.commands.is_empty() {
+            Some(self.notes.len() as f32 * self.speed as f32 / SOUND_TICKS_PER_SECOND as f32)
+        } else {
+            total_duration_sec(&self.commands)
+        }
+    }
+
+    // Command Emission
+
+    pub(crate) fn to_commands(&self) -> Vec<MmlCommand> {
+        let mut commands = Vec::new();
+        self.emit_commands(&mut commands);
+        commands
+    }
+
+    pub(crate) fn emit_commands(&self, commands: &mut Vec<MmlCommand>) {
+        commands.clear();
+
+        // Fixed parameters
+        self.emit_fixed_params(commands);
+
+        // Envelope, vibrato, glide slot definitions
+        self.emit_envelope_slots(commands);
+        self.emit_vibrato_slot(commands);
+        self.emit_glide_slot(commands);
+
+        // Note sequence with per-note state changes
+        self.emit_notes(commands);
+    }
+
+    fn emit_fixed_params(&self, commands: &mut Vec<MmlCommand>) {
+        commands.push(MmlCommand::Tempo {
+            clocks_per_tick: AUDIO_CLOCK_RATE / SOUND_TICKS_PER_SECOND,
+        });
+        commands.push(MmlCommand::Quantize { gate_ratio: 1.0 });
+        commands.push(MmlCommand::Transpose {
+            semitone_offset: 0.0,
+        });
+        commands.push(MmlCommand::Detune {
+            semitone_offset: 0.0,
+        });
+    }
+
+    fn emit_envelope_slots(&self, commands: &mut Vec<MmlCommand>) {
+        if self.effects.contains(&EFFECT_FADEOUT) {
+            commands.push(MmlCommand::EnvelopeSet {
+                slot: 1,
+                initial_level: 1.0,
+                segments: vec![(self.speed as u32, 0.0)],
+            });
+        }
+
+        if self.effects.contains(&EFFECT_HALF_FADEOUT) {
+            let fade_ticks = (self.speed as f32 / 2.0).round() as u32;
+            let hold_ticks = self.speed as u32 - fade_ticks;
+            commands.push(MmlCommand::EnvelopeSet {
+                slot: 2,
+                initial_level: 1.0,
+                segments: vec![(hold_ticks, 1.0), (fade_ticks, 0.0)],
+            });
+        }
+
+        if self.effects.contains(&EFFECT_QUARTER_FADEOUT) {
+            let fade_ticks = (self.speed as f32 / 4.0).round() as u32;
+            let hold_ticks = self.speed as u32 - fade_ticks;
+            commands.push(MmlCommand::EnvelopeSet {
+                slot: 3,
+                initial_level: 1.0,
+                segments: vec![(hold_ticks, 1.0), (fade_ticks, 0.0)],
+            });
+        }
+    }
+
+    fn emit_vibrato_slot(&self, commands: &mut Vec<MmlCommand>) {
+        if self.effects.contains(&EFFECT_VIBRATO) {
+            commands.push(MmlCommand::VibratoSet {
+                slot: 1,
+                delay_ticks: 0,
+                period_ticks: VIBRATO_PERIOD_TICKS,
+                semitone_depth: VIBRATO_DEPTH_CENTS as f32 / 100.0,
+            });
+        } else {
+            commands.push(MmlCommand::Vibrato { slot: 0 });
+        }
+    }
+
+    fn emit_glide_slot(&self, commands: &mut Vec<MmlCommand>) {
+        if self.effects.contains(&EFFECT_SLIDE) {
+            commands.push(MmlCommand::GlideSet {
+                slot: 1,
+                semitone_offset: None,
+                duration_ticks: None,
+            });
+        } else {
+            commands.push(MmlCommand::Glide { slot: 0 });
+        }
+    }
+
+    fn emit_notes(&self, commands: &mut Vec<MmlCommand>) {
+        let tones = pyxel::tones();
+        let duration_ticks = self.speed as u32;
+
+        let mut last_tone: Option<SoundTone> = None;
+        let mut last_volume: Option<SoundVolume> = None;
+        let mut last_fadeout: Option<SoundEffect> = None;
+        let mut last_vibrato: Option<SoundEffect> = None;
+        let mut last_slide: Option<SoundEffect> = None;
+
+        for (i, &note) in self.notes.iter().enumerate() {
+            if note < 0 {
+                commands.push(MmlCommand::Rest { duration_ticks });
+                continue;
+            }
+
+            let tone = self.cycled_or(i, &self.tones, TONE_TRIANGLE);
+            let volume = self.cycled_or(i, &self.volumes, MAX_VOLUME);
+            let effect = self.cycled_or(i, &self.effects, EFFECT_NONE);
+
+            // Tone change
+            if last_tone != Some(tone) {
+                last_tone = Some(tone);
+                commands.push(MmlCommand::Tone { tone });
+            }
+
+            // Volume change
+            if last_volume != Some(volume) {
+                last_volume = Some(volume);
+                commands.push(MmlCommand::Volume {
+                    level: volume as f32 / MAX_VOLUME as f32,
+                });
+            }
+
+            // Envelope change
+            if last_fadeout != Some(effect) {
+                last_fadeout = Some(effect);
+                let slot = match effect {
+                    EFFECT_FADEOUT => 1,
+                    EFFECT_HALF_FADEOUT => 2,
+                    EFFECT_QUARTER_FADEOUT => 3,
+                    _ => 0,
+                };
+                commands.push(MmlCommand::Envelope { slot });
+            }
+
+            // Vibrato change
+            if last_vibrato != Some(effect) {
+                last_vibrato = Some(effect);
+                commands.push(MmlCommand::Vibrato {
+                    slot: u32::from(effect == EFFECT_VIBRATO),
+                });
+            }
+
+            // Glide change
+            if last_slide != Some(effect) {
+                last_slide = Some(effect);
+                commands.push(MmlCommand::Glide {
+                    slot: u32::from(effect == EFFECT_SLIDE),
+                });
+            }
+
+            // Note
+            let tone_data = unsafe { &*tones[tone as usize] };
+            let base_note = if tone_data.mode == ToneMode::Wavetable {
+                36
+            } else {
+                60
+            };
+            commands.push(MmlCommand::Note {
+                midi_note: (note + base_note) as u32,
+                duration_ticks,
+            });
+        }
+    }
+
+    fn cycled_or<T: Copy>(&self, index: usize, values: &[T], default: T) -> T {
+        if values.is_empty() {
+            default
+        } else {
+            values[index % values.len()]
+        }
+    }
+}

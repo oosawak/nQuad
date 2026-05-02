@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cubeboy Game</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; color: #0f0; font-family: monospace; padding: 10px; }
+        h1 { text-align: center; margin-bottom: 20px; }
+        #container { display: flex; flex-direction: column; align-items: center; gap: 15px; }
+        canvas { border: 2px solid #0f0; image-rendering: pixelated; width: 512px; height: 512px; display: block; }
+        #controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; width: 300px; }
+        button { padding: 15px; font-size: 16px; font-weight: bold; background: #0f0; color: #000; border: none; border-radius: 5px; cursor: pointer; }
+        button:active { background: #0d0; transform: scale(0.95); }
+        #left { grid-column: 1; }
+        #right { grid-column: 3; }
+        #jump { grid-column: 2; grid-row: 2; }
+        #fps { font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>🎮 Cubeboy</h1>
+    <div id="container">
+        <canvas id="canvas" width="128" height="128"></canvas>
+        <div id="fps">FPS: 0</div>
+        <div id="controls">
+            <button id="left">←</button>
+            <button id="jump">JUMP</button>
+            <button id="right">→</button>
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const keys = {};
+
+        document.getElementById('left').addEventListener('touchstart', (e) => { e.preventDefault(); keys['ArrowLeft'] = true; });
+        document.getElementById('left').addEventListener('touchend', (e) => { e.preventDefault(); keys['ArrowLeft'] = false; });
+        document.getElementById('right').addEventListener('touchstart', (e) => { e.preventDefault(); keys['ArrowRight'] = true; });
+        document.getElementById('right').addEventListener('touchend', (e) => { e.preventDefault(); keys['ArrowRight'] = false; });
+        document.getElementById('jump').addEventListener('touchstart', (e) => { e.preventDefault(); keys[' '] = true; });
+        document.getElementById('jump').addEventListener('touchend', (e) => { e.preventDefault(); keys[' '] = false; });
+
+        window.addEventListener('keydown', (e) => { keys[e.key] = true; });
+        window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+        fetch('./cubeboy/cubeboy.wasm')
+            .then(r => r.arrayBuffer())
+            .then(buf => WebAssembly.instantiate(buf, { env: { memory: new WebAssembly.Memory({ initial: 256 }) } }))
+            .then(({ instance }) => {
+                const { init, update, render, get_framebuffer, memory } = instance.exports;
+                init();
+                const fbPtr = get_framebuffer();
+                const fbView = new Uint32Array(memory.buffer, fbPtr, 128 * 128);
+                
+                let frameCount = 0, fps = 0, lastTime = performance.now();
+
+                const gameLoop = () => {
+                    update(keys['ArrowLeft'] ? 1 : 0, keys['ArrowRight'] ? 1 : 0, keys[' '] ? 1 : 0);
+                    render();
+
+                    const imgData = ctx.createImageData(128, 128);
+                    const data = imgData.data;
+                    for (let i = 0; i < 128 * 128; i++) {
+                        const color = fbView[i];
+                        data[i * 4 + 0] = (color >> 16) & 0xFF;
+                        data[i * 4 + 1] = (color >> 8) & 0xFF;
+                        data[i * 4 + 2] = color & 0xFF;
+                        data[i * 4 + 3] = 0xFF;
+                    }
+                    ctx.putImageData(imgData, 0, 0);
+
+                    frameCount++;
+                    const now = performance.now();
+                    if (now - lastTime >= 1000) {
+                        fps = frameCount;
+                        document.getElementById('fps').textContent = `FPS: ${fps}`;
+                        frameCount = 0;
+                        lastTime = now;
+                    }
+                    requestAnimationFrame(gameLoop);
+                };
+                gameLoop();
+            })
+            .catch(err => { document.getElementById('fps').textContent = `ERROR: ${err.message}`; console.error(err); });
+    </script>
+</body>
+</html>

@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nantaraquad - Lineboy & Cubeboy</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            font-family: Arial, sans-serif;
+            color: white;
+            text-align: center;
+        }
+        h1 { color: #00ff00; }
+        canvas { 
+            border: 2px solid #00ff00;
+            display: block;
+            margin: 20px auto;
+            image-rendering: pixelated;
+            width: 512px;
+            height: 512px;
+        }
+        .controls {
+            margin-top: 20px;
+            font-size: 14px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background-color: #00ff00;
+            color: black;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background-color: #00cc00; }
+        #status { color: #ffff00; font-weight: bold; }
+        
+        /* モバイルコントローラーUI */
+        .mobile-controller {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+        }
+        
+        .controller-layout {
+            max-width: 100%;
+            display: flex;
+            justify-content: space-around;
+            align-items: flex-end;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        /* 十字キー */
+        .dpad {
+            position: relative;
+            width: 100px;
+            height: 100px;
+            user-select: none;
+        }
+        
+        .dpad button {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            padding: 0;
+            margin: 0;
+            border: 2px solid #666;
+            border-radius: 5px;
+            background-color: #444;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+        }
+        
+        .dpad button.active {
+            background-color: #00ff00;
+            color: black;
+            border-color: #00ff00;
+        }
+        
+        .dpad-up { top: 0; left: 30px; }
+        .dpad-down { bottom: 0; left: 30px; }
+        .dpad-left { top: 30px; left: 0; }
+        .dpad-right { top: 30px; right: 0; }
+        
+        /* ボタングループ */
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .button-group label {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        
+        /* ABCD ボタン */
+        .abcd-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, 40px);
+            gap: 8px;
+            justify-content: center;
+        }
+        
+        .button-abcd {
+            width: 40px;
+            height: 40px;
+            padding: 0;
+            margin: 0;
+            border: 2px solid #666;
+            border-radius: 50%;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .button-a { background-color: #ff4444; color: white; }
+        .button-b { background-color: #ffff44; color: black; }
+        .button-x { background-color: #44ff44; color: black; }
+        .button-y { background-color: #4444ff; color: white; }
+        
+        .button-abcd.active {
+            box-shadow: 0 0 10px currentColor;
+            transform: scale(1.1);
+        }
+        
+        /* LR ボタン */
+        .lr-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+        }
+        
+        .button-lr {
+            width: 50px;
+            height: 30px;
+            padding: 0;
+            margin: 0;
+            border: 2px solid #666;
+            border-radius: 5px;
+            background-color: #444;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .button-lr.active {
+            background-color: #00ff00;
+            color: black;
+            border-color: #00ff00;
+        }
+        
+        /* レスポンシブ対応 */
+        @media (max-width: 600px) {
+            canvas {
+                width: 100%;
+                height: auto;
+                max-width: 512px;
+            }
+            
+            .mobile-controller {
+                position: relative;
+                bottom: auto;
+                left: auto;
+                right: auto;
+                margin-top: 20px;
+                background: rgba(0, 0, 0, 0.9);
+                padding: 15px;
+                border-top: 2px solid #00ff00;
+            }
+            
+            .controller-layout {
+                gap: 30px;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>🎮 Nantaraquad <span style="font-size: 14px; color: #888;">(v20260501-070430)</span></h1>
+    
+    <div class="controls">
+        <button onclick="startLineboy()">▶️ Play Lineboy</button>
+        <button onclick="startCubeboy()">▶️ Play Cubeboy</button>
+    </div>
+    
+    <canvas id="canvas" width="512" height="512"></canvas>
+    
+    <div class="controls">
+        <p id="status">Select a game to start</p>
+        <p style="font-size: 12px; margin-top: 30px;">
+            <strong>Controls:</strong><br>
+            Arrow Keys / WASD: Move | Space: Jump/Dash
+        </p>
+    </div>
+    
+    <!-- モバイルコントローラーUI -->
+    <div class="mobile-controller" id="mobileController">
+        <div class="controller-layout">
+            <!-- 十字キー -->
+            <div class="button-group">
+                <label>D-PAD</label>
+                <div class="dpad">
+                    <button class="dpad-up" data-key="up">▲</button>
+                    <button class="dpad-down" data-key="down">▼</button>
+                    <button class="dpad-left" data-key="left">◄</button>
+                    <button class="dpad-right" data-key="right">►</button>
+                </div>
+            </div>
+            
+            <!-- ABCD ボタン -->
+            <div class="button-group">
+                <label>ABCD</label>
+                <div class="abcd-buttons">
+                    <button class="button-abcd button-x" data-key="x">X</button>
+                    <button class="button-abcd button-y" data-key="y">Y</button>
+                    <button class="button-abcd button-a" data-key="z">A</button>
+                    <button class="button-abcd button-b" data-key="x">B</button>
+                </div>
+            </div>
+            
+            <!-- LR ボタン -->
+            <div class="button-group">
+                <label>Shoulder</label>
+                <div class="lr-buttons">
+                    <button class="button-lr" data-key="l">L</button>
+                    <button class="button-lr" data-key="r">R</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // キャッシュバスティング用タイムスタンプ
+        const CACHE_BUST = '20260501070430';
+        
+        // モバイルキーマッピング
+        const keyMap = {
+            'up': 'ArrowUp',
+            'down': 'ArrowDown',
+            'left': 'ArrowLeft',
+            'right': 'ArrowRight',
+            'z': 'z',
+            'x': 'x',
+            'y': 'y',
+            'l': 'q',
+            'r': 'e'
+        };
+        
+        // モバイルコントローラー初期化
+        function initMobileController() {
+            const controller = document.getElementById('mobileController');
+            const buttons = controller.querySelectorAll('button[data-key]');
+            
+            buttons.forEach(button => {
+                const key = button.dataset.key;
+                
+                // マウス/タッチイベント
+                button.addEventListener('mousedown', () => simulateKeyDown(keyMap[key]));
+                button.addEventListener('mouseup', () => simulateKeyUp(keyMap[key]));
+                button.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    button.classList.add('active');
+                    simulateKeyDown(keyMap[key]);
+                });
+                button.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    button.classList.remove('active');
+                    simulateKeyUp(keyMap[key]);
+                });
+                
+                // マウスアウトでリセット
+                button.addEventListener('mouseleave', () => {
+                    button.classList.remove('active');
+                    simulateKeyUp(keyMap[key]);
+                });
+                button.addEventListener('mouseenter', (e) => {
+                    if (e.buttons === 1) { // 左マウスボタンが押されているか
+                        button.classList.add('active');
+                        simulateKeyDown(keyMap[key]);
+                    }
+                });
+            });
+        }
+        
+        // キーイベントをシミュレート
+        function simulateKeyDown(key) {
+            const event = new KeyboardEvent('keydown', {
+                key: key,
+                code: getKeyCode(key),
+                keyCode: getKeyCodeNum(key),
+                bubbles: true
+            });
+            document.dispatchEvent(event);
+        }
+        
+        function simulateKeyUp(key) {
+            const event = new KeyboardEvent('keyup', {
+                key: key,
+                code: getKeyCode(key),
+                keyCode: getKeyCodeNum(key),
+                bubbles: true
+            });
+            document.dispatchEvent(event);
+        }
+        
+        function getKeyCode(key) {
+            const map = {
+                'ArrowUp': 'ArrowUp',
+                'ArrowDown': 'ArrowDown',
+                'ArrowLeft': 'ArrowLeft',
+                'ArrowRight': 'ArrowRight',
+                'z': 'KeyZ',
+                'x': 'KeyX',
+                'y': 'KeyY',
+                'q': 'KeyQ',
+                'e': 'KeyE'
+            };
+            return map[key] || key;
+        }
+        
+        function getKeyCodeNum(key) {
+            const map = {
+                'ArrowUp': 38,
+                'ArrowDown': 40,
+                'ArrowLeft': 37,
+                'ArrowRight': 39,
+                'z': 90,
+                'x': 88,
+                'y': 89,
+                'q': 81,
+                'e': 69
+            };
+            return map[key] || 0;
+        }
+        
+        // デバイスのタッチ判定
+        function isMobileDevice() {
+            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+                || window.matchMedia("(max-width: 600px)").matches;
+        }
+        
+        // ゲーム開始時にコントローラーを表示
+        window.showMobileController = () => {
+            const controller = document.getElementById('mobileController');
+            if (isMobileDevice()) {
+                controller.style.display = 'block';
+                initMobileController();
+            }
+        };
+        
+        // WASM ファイルをローカルに読み込み
+        async function loadWasm(wasmPath) {
+            try {
+                // キャッシュバスターを追加
+                const url = wasmPath + '?v=' + CACHE_BUST;
+                console.log('Loading WASM:', url);
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`Failed to fetch ${wasmPath} (HTTP ${response.status})`);
+                const buffer = await response.arrayBuffer();
+                
+                // WASM モジュールをインポート
+                const wasmModule = await WebAssembly.instantiate(buffer, {});
+                return wasmModule.instance;
+            } catch (e) {
+                console.error('WASM Loading Error:', e);
+                document.getElementById('status').textContent = '❌ Error: ' + e.message;
+                throw e;
+            }
+        }
+
+        window.startLineboy = async () => {
+            document.getElementById('status').textContent = '⏳ Loading Lineboy...';
+            try {
+                await loadWasm('/target/wasm32-unknown-unknown/release/examples/lineboy.wasm');
+                document.getElementById('status').textContent = '✅ Lineboy Running!';
+                window.showMobileController();
+                // macroquad ゲームループが実行開始
+            } catch (e) {
+                document.getElementById('status').textContent = '❌ Error: ' + e.message;
+            }
+        };
+
+        window.startCubeboy = async () => {
+            document.getElementById('status').textContent = '⏳ Loading Cubeboy...';
+            try {
+                await loadWasm('/target/wasm32-unknown-unknown/release/examples/cubeboy.wasm');
+                document.getElementById('status').textContent = '✅ Cubeboy Running!';
+                window.showMobileController();
+            } catch (e) {
+                document.getElementById('status').textContent = '❌ Error: ' + e.message;
+            }
+        };
+        
+        // ページ読み込み時にバージョン表示
+        window.addEventListener('load', () => {
+            console.log('🎮 Nantaraquad Web Version:', CACHE_BUST);
+            
+            // タッチデバイスの場合、コントローラーUIの初期化
+            if (isMobileDevice()) {
+                console.log('Mobile device detected - controller UI available');
+            }
+        });
+    </script>
+</body>
+</html>
