@@ -152,39 +152,55 @@
         const demos = [
             {
                 id: 'cubeboy-3d',
-                name: '3D Cube (3D Demo)',
+                name: '🎲 3D Cube',
+                category: '3D Graphics',
                 description: 'Rotating 3D cube with keyboard controls',
-                type: 'cubeboy',
-                file: 'cubeboy.js'
+                type: 'cubeboy-3d'
             },
             {
                 id: 'cubeboy-nquad',
-                name: 'Cubeboy (nQuad API)',
+                name: '🎲 Cubeboy (nQuad)',
+                category: '3D Graphics',
                 description: '3D demo using nQuad API',
-                type: 'cubeboy',
-                file: 'cubeboy.js'
+                type: 'cubeboy-nquad'
             },
             {
                 id: 'lineboy',
-                name: 'Lineboy',
-                description: 'Platformer with jumping mechanics',
-                type: 'lineboy',
-                file: 'lineboy_bg.wasm'
+                name: '🏃 Lineboy',
+                category: 'Games',
+                description: 'Platformer with jumping mechanics - Use Arrow keys or WASD + Space to jump',
+                type: 'lineboy'
             }
         ];
 
         let currentDemo = null;
-        let wasmModule = null;
+        let gameRunning = false;
 
         function renderDemoList() {
             const list = document.getElementById('demoList');
+            let currentCategory = '';
+            
             demos.forEach(demo => {
+                if (demo.category !== currentCategory) {
+                    currentCategory = demo.category;
+                    const catDiv = document.createElement('div');
+                    catDiv.className = 'demo-category';
+                    catDiv.textContent = currentCategory;
+                    list.appendChild(catDiv);
+                }
+
                 const li = document.createElement('li');
                 li.textContent = demo.name;
                 li.onclick = () => loadDemo(demo.id);
                 li.id = `demo-${demo.id}`;
                 list.appendChild(li);
             });
+        }
+
+        function clearContent() {
+            const container = document.getElementById('demoContainer');
+            container.innerHTML = '';
+            gameRunning = false;
         }
 
         async function loadDemo(demoId) {
@@ -195,20 +211,19 @@
             document.querySelectorAll('.demo-list li').forEach(li => li.classList.remove('active'));
             document.getElementById(`demo-${demoId}`).classList.add('active');
 
-            // Clear container
-            const container = document.getElementById('demoContainer');
-            container.innerHTML = '';
-
+            clearContent();
             currentDemo = demo.id;
 
-            if (demo.type === 'cubeboy') {
-                setupCubeboyDemo(demo, container);
+            if (demo.type === 'cubeboy-3d' || demo.type === 'cubeboy-nquad') {
+                setupCubeboyDemo(demo);
             } else if (demo.type === 'lineboy') {
-                setupLineboyDemo(demo, container);
+                setupLineboyDemo(demo);
             }
         }
 
-        function setupCubeboyDemo(demo, container) {
+        function setupCubeboyDemo(demo) {
+            const container = document.getElementById('demoContainer');
+            
             const canvas = document.createElement('canvas');
             canvas.id = 'canvas';
             canvas.width = 512;
@@ -217,34 +232,31 @@
             const status = document.createElement('div');
             status.className = 'status';
             status.innerHTML = `
-                <div><strong>${demo.name}</strong></div>
+                <div style="font-weight: bold;">${demo.name}</div>
                 <div>${demo.description}</div>
-                <div style="margin-top: 10px; font-size: 11px;">
-                    <div>Controls: Arrow Left/Right = Rotate Y, Space/Up = Rotate X</div>
+                <div style="margin-top: 8px; font-size: 11px;">
+                    Controls: ← → = Rotate Y axis | ↑ / Space = Rotate X axis
                 </div>
             `;
 
             container.appendChild(canvas);
             container.appendChild(status);
 
-            // Import and init cubeboy
-            import('./cubeboy.js').then(module => {
-                wasmModule = module;
+            // Import cubeboy module
+            import('./examples/cubeboy.js').then(module => {
                 module.init();
 
                 const keys = { left: false, right: false, jump: false };
 
-                window.addEventListener('keydown', (e) => {
-                    if (e.key === 'ArrowLeft') keys.left = true;
-                    if (e.key === 'ArrowRight') keys.right = true;
-                    if (e.key === ' ' || e.key === 'ArrowUp') keys.jump = true;
-                });
+                const keyHandler = (e, state) => {
+                    if (e.key === 'ArrowLeft') keys.left = state;
+                    if (e.key === 'ArrowRight') keys.right = state;
+                    if (e.key === ' ' || e.key === 'ArrowUp') keys.jump = state;
+                    if (state && (e.key === ' ' || e.key === 'ArrowUp')) e.preventDefault();
+                };
 
-                window.addEventListener('keyup', (e) => {
-                    if (e.key === 'ArrowLeft') keys.left = false;
-                    if (e.key === 'ArrowRight') keys.right = false;
-                    if (e.key === ' ' || e.key === 'ArrowUp') keys.jump = false;
-                });
+                window.addEventListener('keydown', (e) => keyHandler(e, true));
+                window.addEventListener('keyup', (e) => keyHandler(e, false));
 
                 const ctx = canvas.getContext('2d');
                 const palette = new Uint32Array([
@@ -254,7 +266,11 @@
                     0xFF00FFFF, 0xFF808080, 0xFFFF80FF, 0xFFFFAAAA
                 ]);
 
+                gameRunning = true;
+
                 function animate() {
+                    if (!gameRunning) return;
+                    
                     module.update(keys.left, keys.right, keys.jump);
                     module.render();
                     const fb = module.get_framebuffer();
@@ -276,39 +292,182 @@
 
                 animate();
             }).catch(err => {
-                status.innerHTML += `<div style="color: #f00;">Error loading WASM: ${err}</div>`;
+                status.innerHTML += `<div class="bad">❌ Error loading WASM: ${err.message}</div>`;
             });
         }
 
-        function setupLineboyDemo(demo, container) {
+        function setupLineboyDemo(demo) {
+            const container = document.getElementById('demoContainer');
+            
             const canvas = document.createElement('canvas');
             canvas.id = 'canvas';
             canvas.width = 512;
             canvas.height = 512;
 
-            const status = document.createElement('div');
-            status.className = 'status';
-            status.innerHTML = `
+            const controls = document.createElement('div');
+            controls.className = 'controls';
+            controls.innerHTML = `
                 <div><strong>${demo.name}</strong></div>
-                <div>${demo.description}</div>
-                <div style="margin-top: 10px; font-size: 11px;">
-                    <div>Loading Lineboy demo...</div>
+                <div style="margin: 8px 0; font-size: 11px;">${demo.description}</div>
+                <div class="touch-controls">
+                    <button id="btn-left" class="touch-btn">← Left</button>
+                    <button id="btn-right" class="touch-btn">Right →</button>
+                    <button id="btn-jump" class="touch-btn jump">JUMP ↑</button>
+                    <button id="btn-reset" class="touch-btn" style="background: #f0f; color: #000;">Reset</button>
                 </div>
             `;
 
+            const status = document.createElement('div');
+            status.className = 'status';
+            status.innerHTML = `
+                <div class="status-item">WASM Status: <span id="wasm-status">Loading...</span></div>
+                <div class="status-item">Game Status: <span id="game-status">Initializing...</span></div>
+                <div class="status-item">Frame: <span id="frame-count">0</span></div>
+                <div id="debug-log"></div>
+            `;
+
             container.appendChild(canvas);
+            container.appendChild(controls);
             container.appendChild(status);
 
-            // Load lineboy WASM
-            fetch('lineboy_bg.wasm')
-                .then(response => response.arrayBuffer())
-                .then(buffer => {
-                    status.innerHTML += '<div style="color: #0f0;">✓ WASM loaded. Initializing...</div>';
-                    // Lineboy setup would go here
-                })
-                .catch(err => {
-                    status.innerHTML += `<div style="color: #f00;">Error: ${err}</div>`;
-                });
+            // Setup button handlers and game
+            setupLineboy(canvas, status);
+        }
+
+        async function setupLineboy(canvas, status) {
+            const ctx = canvas.getContext('2d');
+            let gameRunning = false;
+            let frameCount = 0;
+
+            const palette = [
+                [0,0,0,255],           // 0: Black
+                [29,43,83,255],        // 1: Navy
+                [126,37,83,255],       // 2: Purple
+                [0,135,81,255],        // 3: Green
+                [171,82,54,255],       // 4: Brown
+                [95,87,79,255],        // 5: Dark Gray
+                [194,195,199,255],     // 6: Light Gray
+                [255,241,232,255],     // 7: White
+                [255,0,77,255],        // 8: Red
+                [255,163,0,255],       // 9: Orange
+                [255,240,0,255],       // 10: Yellow
+                [0,231,86,255],        // 11: Lime
+                [41,173,255,255],      // 12: Cyan
+                [131,118,156,255],     // 13: Gray
+                [255,119,168,255],     // 14: Pink
+                [255,204,170,255]      // 15: Peach
+            ];
+
+            function addLog(msg) {
+                const log = document.getElementById('debug-log');
+                log.textContent += msg + '\n';
+                log.scrollTop = log.scrollHeight;
+            }
+
+            const keys = {};
+            window.addEventListener('keydown', (e) => {
+                keys[e.key.toLowerCase()] = true;
+                if (e.key === ' ') e.preventDefault();
+            });
+            window.addEventListener('keyup', (e) => {
+                keys[e.key.toLowerCase()] = false;
+            });
+
+            // Touch buttons
+            document.getElementById('btn-left').addEventListener('mousedown', () => keys['arrowleft'] = true);
+            document.getElementById('btn-left').addEventListener('mouseup', () => keys['arrowleft'] = false);
+            document.getElementById('btn-left').addEventListener('touchstart', (e) => { keys['arrowleft'] = true; e.preventDefault(); });
+            document.getElementById('btn-left').addEventListener('touchend', (e) => { keys['arrowleft'] = false; e.preventDefault(); });
+
+            document.getElementById('btn-right').addEventListener('mousedown', () => keys['arrowright'] = true);
+            document.getElementById('btn-right').addEventListener('mouseup', () => keys['arrowright'] = false);
+            document.getElementById('btn-right').addEventListener('touchstart', (e) => { keys['arrowright'] = true; e.preventDefault(); });
+            document.getElementById('btn-right').addEventListener('touchend', (e) => { keys['arrowright'] = false; e.preventDefault(); });
+
+            document.getElementById('btn-jump').addEventListener('mousedown', () => keys[' '] = true);
+            document.getElementById('btn-jump').addEventListener('mouseup', () => keys[' '] = false);
+            document.getElementById('btn-jump').addEventListener('touchstart', (e) => { keys[' '] = true; e.preventDefault(); });
+            document.getElementById('btn-jump').addEventListener('touchend', (e) => { keys[' '] = false; e.preventDefault(); });
+
+            document.getElementById('btn-reset').addEventListener('click', () => {
+                if (lineboy && gameRunning) {
+                    lineboy.init();
+                    addLog('🔄 Game reset');
+                }
+            });
+
+            // Load WASM
+            try {
+                addLog('⏳ Loading WASM module...');
+                const wasmPath = './examples/lineboy_bg.wasm';
+                const response = await fetch(wasmPath);
+                const buffer = await response.arrayBuffer();
+                const { instance } = await WebAssembly.instantiate(buffer);
+                const lineboy = instance.exports;
+                
+                addLog('✅ WASM loaded');
+                document.getElementById('wasm-status').textContent = '✓ Loaded';
+                document.getElementById('wasm-status').className = 'good';
+
+                addLog('⏳ Initializing game...');
+                lineboy.init();
+                addLog('✅ Game initialized');
+                document.getElementById('game-status').textContent = '✓ Ready';
+                document.getElementById('game-status').className = 'good';
+
+                gameRunning = true;
+
+                // Game loop
+                function gameLoop() {
+                    if (!gameRunning) return;
+                    
+                    try {
+                        const left = keys['arrowleft'] || keys['a'] || false;
+                        const right = keys['arrowright'] || keys['d'] || false;
+                        const jump = keys[' '] || false;
+
+                        lineboy.update(left, right, jump);
+                        lineboy.render();
+
+                        const buffer = lineboy.get_framebuffer();
+
+                        if (!buffer || buffer.length === 0) {
+                            addLog('❌ ERROR: Buffer is null or empty!');
+                            gameRunning = false;
+                            return;
+                        }
+
+                        const imageData = ctx.createImageData(512, 512);
+                        const data = imageData.data;
+                        
+                        for (let i = 0; i < buffer.length; i++) {
+                            const [r, g, b, a] = palette[buffer[i]];
+                            data[i * 4] = r;
+                            data[i * 4 + 1] = g;
+                            data[i * 4 + 2] = b;
+                            data[i * 4 + 3] = a;
+                        }
+                        
+                        ctx.putImageData(imageData, 0, 0);
+                        frameCount++;
+                        document.getElementById('frame-count').textContent = frameCount;
+
+                    } catch (err) {
+                        addLog('❌ ERROR in gameLoop: ' + err.message);
+                        gameRunning = false;
+                        return;
+                    }
+
+                    requestAnimationFrame(gameLoop);
+                }
+
+                gameLoop();
+
+            } catch (err) {
+                addLog('❌ FATAL: ' + err.message);
+                document.getElementById('wasm-status').textContent = '✗ Error';
+                document.getElementById('wasm-status').className = 'bad';
+            }
         }
 
         // Initialize
