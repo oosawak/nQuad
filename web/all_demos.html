@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nQuad - All Demos</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: monospace;
+            background: #1a1a1a;
+            color: #0f0;
+            overflow-x: hidden;
+        }
+
+        .header {
+            background: #0a0a0a;
+            border-bottom: 2px solid #0f0;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .container {
+            display: flex;
+            height: calc(100vh - 80px);
+        }
+
+        .sidebar {
+            width: 250px;
+            background: #0a0a0a;
+            border-right: 2px solid #0f0;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .demo-list {
+            list-style: none;
+        }
+
+        .demo-list li {
+            margin: 5px 0;
+            padding: 8px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .demo-list li:hover {
+            background: #1a3a1a;
+            border: 1px solid #0f0;
+        }
+
+        .demo-list li.active {
+            background: #0f0;
+            color: #000;
+            font-weight: bold;
+        }
+
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .demo-frame {
+            display: none;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+
+        .demo-frame.active {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #canvas {
+            border: 2px solid #0f0;
+            background: #000;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            max-width: 90vmin;
+            max-height: 90vmin;
+        }
+
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border: 1px solid #0f0;
+            max-width: 600px;
+            font-size: 12px;
+        }
+
+        .controls {
+            margin-top: 10px;
+            padding: 10px;
+            background: #0a0a0a;
+            border: 1px solid #0f0;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .info-text {
+            color: #0f0;
+            font-size: 13px;
+            margin: 10px;
+            text-align: center;
+            max-width: 600px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎮 nQuad - Demo Gallery</h1>
+        <p style="font-size: 12px; color: #666;">All WASM demos in one place</p>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <h3 style="margin-bottom: 10px; border-bottom: 1px solid #0f0; padding-bottom: 5px;">Demos</h3>
+            <ul class="demo-list" id="demoList">
+                <!-- Demos will be inserted here by JS -->
+            </ul>
+        </div>
+
+        <div class="content">
+            <div id="demoContainer">
+                <div class="info-text">
+                    Select a demo from the sidebar to get started
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const demos = [
+            {
+                id: 'cubeboy-3d',
+                name: '3D Cube (3D Demo)',
+                description: 'Rotating 3D cube with keyboard controls',
+                type: 'cubeboy',
+                file: 'cubeboy.js'
+            },
+            {
+                id: 'cubeboy-nquad',
+                name: 'Cubeboy (nQuad API)',
+                description: '3D demo using nQuad API',
+                type: 'cubeboy',
+                file: 'cubeboy.js'
+            },
+            {
+                id: 'lineboy',
+                name: 'Lineboy',
+                description: 'Platformer with jumping mechanics',
+                type: 'lineboy',
+                file: 'lineboy_bg.wasm'
+            }
+        ];
+
+        let currentDemo = null;
+        let wasmModule = null;
+
+        function renderDemoList() {
+            const list = document.getElementById('demoList');
+            demos.forEach(demo => {
+                const li = document.createElement('li');
+                li.textContent = demo.name;
+                li.onclick = () => loadDemo(demo.id);
+                li.id = `demo-${demo.id}`;
+                list.appendChild(li);
+            });
+        }
+
+        async function loadDemo(demoId) {
+            const demo = demos.find(d => d.id === demoId);
+            if (!demo || demo.id === currentDemo) return;
+
+            // Update UI
+            document.querySelectorAll('.demo-list li').forEach(li => li.classList.remove('active'));
+            document.getElementById(`demo-${demoId}`).classList.add('active');
+
+            // Clear container
+            const container = document.getElementById('demoContainer');
+            container.innerHTML = '';
+
+            currentDemo = demo.id;
+
+            if (demo.type === 'cubeboy') {
+                setupCubeboyDemo(demo, container);
+            } else if (demo.type === 'lineboy') {
+                setupLineboyDemo(demo, container);
+            }
+        }
+
+        function setupCubeboyDemo(demo, container) {
+            const canvas = document.createElement('canvas');
+            canvas.id = 'canvas';
+            canvas.width = 512;
+            canvas.height = 512;
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            status.innerHTML = `
+                <div><strong>${demo.name}</strong></div>
+                <div>${demo.description}</div>
+                <div style="margin-top: 10px; font-size: 11px;">
+                    <div>Controls: Arrow Left/Right = Rotate Y, Space/Up = Rotate X</div>
+                </div>
+            `;
+
+            container.appendChild(canvas);
+            container.appendChild(status);
+
+            // Import and init cubeboy
+            import('./cubeboy.js').then(module => {
+                wasmModule = module;
+                module.init();
+
+                const keys = { left: false, right: false, jump: false };
+
+                window.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowLeft') keys.left = true;
+                    if (e.key === 'ArrowRight') keys.right = true;
+                    if (e.key === ' ' || e.key === 'ArrowUp') keys.jump = true;
+                });
+
+                window.addEventListener('keyup', (e) => {
+                    if (e.key === 'ArrowLeft') keys.left = false;
+                    if (e.key === 'ArrowRight') keys.right = false;
+                    if (e.key === ' ' || e.key === 'ArrowUp') keys.jump = false;
+                });
+
+                const ctx = canvas.getContext('2d');
+                const palette = new Uint32Array([
+                    0xFF000000, 0xFF000080, 0xFF800080, 0xFF008000,
+                    0xFF804000, 0xFF808080, 0xFFC0C0C0, 0xFFFFFFFF,
+                    0xFFFF0000, 0xFFFF8000, 0xFFFFFF00, 0xFF00FF00,
+                    0xFF00FFFF, 0xFF808080, 0xFFFF80FF, 0xFFFFAAAA
+                ]);
+
+                function animate() {
+                    module.update(keys.left, keys.right, keys.jump);
+                    module.render();
+                    const fb = module.get_framebuffer();
+                    
+                    const imageData = ctx.createImageData(512, 512);
+                    const data = imageData.data;
+                    
+                    for (let i = 0; i < fb.length; i++) {
+                        const color = palette[fb[i]];
+                        data[i * 4] = (color >> 16) & 0xFF;
+                        data[i * 4 + 1] = (color >> 8) & 0xFF;
+                        data[i * 4 + 2] = color & 0xFF;
+                        data[i * 4 + 3] = 0xFF;
+                    }
+                    
+                    ctx.putImageData(imageData, 0, 0);
+                    requestAnimationFrame(animate);
+                }
+
+                animate();
+            }).catch(err => {
+                status.innerHTML += `<div style="color: #f00;">Error loading WASM: ${err}</div>`;
+            });
+        }
+
+        function setupLineboyDemo(demo, container) {
+            const canvas = document.createElement('canvas');
+            canvas.id = 'canvas';
+            canvas.width = 512;
+            canvas.height = 512;
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            status.innerHTML = `
+                <div><strong>${demo.name}</strong></div>
+                <div>${demo.description}</div>
+                <div style="margin-top: 10px; font-size: 11px;">
+                    <div>Loading Lineboy demo...</div>
+                </div>
+            `;
+
+            container.appendChild(canvas);
+            container.appendChild(status);
+
+            // Load lineboy WASM
+            fetch('lineboy_bg.wasm')
+                .then(response => response.arrayBuffer())
+                .then(buffer => {
+                    status.innerHTML += '<div style="color: #0f0;">✓ WASM loaded. Initializing...</div>';
+                    // Lineboy setup would go here
+                })
+                .catch(err => {
+                    status.innerHTML += `<div style="color: #f00;">Error: ${err}</div>`;
+                });
+        }
+
+        // Initialize
+        renderDemoList();
+        loadDemo('cubeboy-3d');
+    </script>
+</body>
+</html>
