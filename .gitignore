@@ -9,8 +9,9 @@ Cargo.lock
 # Build artifacts
 /pkg/
 /wasm-builds/
-*.wasm
-*.wasm.d.ts
+# Note: *.wasm files in docs/examples/ and web/examples/ are tracked
+# Only ignore build artifacts in target/
+/target/*/*.wasm
 wasm-build.log
 
 # Logs
